@@ -26,16 +26,33 @@ export default function SuperAdminBackoffice() {
   const [authMessaggio, setAuthMessaggio] = useState("");
   const [isResetting, setIsResetting] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<"leghe" | "listoni" | "logs">("leghe");
+  // Stato Sito Offline / Manutenzione
+  const [sitoOffline, setSitoOffline] = useState(false);
 
+  // Navigazione Tab
+  const [activeTab, setActiveTab] = useState<"leghe" | "licenze" | "listoni" | "ticket" | "logs">("leghe");
+
+  // Listoni
   const [loadingClassic, setLoadingClassic] = useState(false);
   const [msgClassic, setMsgClassic] = useState("");
   const [loadingMantra, setLoadingMantra] = useState(false);
   const [msgMantra, setMsgMantra] = useState("");
 
+  // Leghe, Utenti, Licenze, Ticket & Log
   const [leghe, setLeghe] = useState<any[]>([]);
+  const [licenze, setLicenze] = useState<Record<string, any>>({});
+  const [tickets, setTickets] = useState<any[]>([]);
   const [selectedLegaForUsers, setSelectedLegaForUsers] = useState<any>(null);
   const [selectedLegaForLogs, setSelectedLegaForLogs] = useState<string>("TUTTE");
+
+  // Form Nuova Licenza
+  const [licEmail, setLicEmail] = useState("");
+  const [licMaxLeghe, setLicMaxLeghe] = useState("1");
+  const [licNote, setLicNote] = useState("Stagione 2026/2027");
+
+  // Campi editabili nella modal Utenti / Admin della lega
+  const [nuovoAdminEmail, setNuovoAdminEmail] = useState("");
+  const [slotEmailsDraft, setSlotEmailsDraft] = useState<Record<number, string>>({});
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -58,8 +75,28 @@ export default function SuperAdminBackoffice() {
   useEffect(() => {
     if (!adminUser) return;
 
+    const unsubOffline = onValue(ref(db, "impostazioni_globali/sitoOffline"), (snap) => {
+      setSitoOffline(Boolean(snap.val()));
+    });
+
+    const unsubLicenze = onValue(ref(db, "impostazioni_globali/licenze"), (snap) => {
+      setLicenze(snap.val() || {});
+    });
+
+    const unsubTickets = onValue(ref(db, "impostazioni_globali/ticket_supporto"), (snap) => {
+      const val = snap.val();
+      if (val) {
+        const arr = Object.keys(val)
+          .map((k) => ({ id: k, ...val[k] }))
+          .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setTickets(arr);
+      } else {
+        setTickets([]);
+      }
+    });
+
     const legheRef = ref(db, "leghe");
-    const unsubscribe = onValue(legheRef, (snapshot) => {
+    const unsubscribeLeghe = onValue(legheRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const legheArray = Object.keys(data)
@@ -79,9 +116,50 @@ export default function SuperAdminBackoffice() {
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubOffline();
+      unsubLicenze();
+      unsubTickets();
+      unsubscribeLeghe();
+    };
   }, [adminUser, selectedLegaForUsers?.id]);
 
+  const toggleSitoOffline = async () => {
+    await set(ref(db, "impostazioni_globali/sitoOffline"), !sitoOffline);
+  };
+
+  // --- GESTIONE LICENZE ---
+  const emailToKey = (mail: string) => mail.trim().toLowerCase().replace(/\./g, "_");
+
+  const salvaLicenza = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const mailClean = licEmail.trim().toLowerCase();
+    if (!mailClean) return;
+
+    await set(ref(db, `impostazioni_globali/licenze/${emailToKey(mailClean)}`), {
+      email: mailClean,
+      maxLeghe: Math.max(1, parseInt(licMaxLeghe) || 1),
+      attiva: true,
+      note: licNote.trim() || "Licenza Attiva",
+      aggiornataIl: new Date().toISOString(),
+    });
+
+    setLicEmail("");
+    setLicMaxLeghe("1");
+  };
+
+  const toggleStatoLicenza = async (chiave: string, statoAttuale: boolean) => {
+    await update(ref(db, `impostazioni_globali/licenze/${chiave}`), {
+      attiva: !statoAttuale,
+    });
+  };
+
+  const eliminaLicenza = async (chiave: string) => {
+    if (!confirm("Rimuovere definitivamente questa licenza?")) return;
+    await remove(ref(db, `impostazioni_globali/licenze/${chiave}`));
+  };
+
+  // --- AUTH ---
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthMessaggio("");
@@ -124,7 +202,7 @@ export default function SuperAdminBackoffice() {
 
   const entraNellaLega = (idLega: string) => {
     localStorage.setItem("legaAttualeId", idLega);
-    router.push("/dashboard");
+    window.location.href = `/dashboard?lega=${encodeURIComponent(idLega)}`;
   };
 
   const eliminaLega = async (idLega: string, nomeLega: string) => {
@@ -133,10 +211,74 @@ export default function SuperAdminBackoffice() {
     }
   };
 
+  // --- GESTIONE AVANZATA ADMIN, PARTECIPANTI E INVITI DI UNA LEGA ---
+  const apriModalUtentiLega = (lega: any) => {
+    setSelectedLegaForUsers(lega);
+    setNuovoAdminEmail(lega.adminEmail || "");
+    const drafts: Record<number, string> = {};
+    if (lega.squadre) {
+      Object.values(lega.squadre).forEach((sq: any) => {
+        drafts[sq.id] = sq.emailProprietario || "";
+      });
+    }
+    setSlotEmailsDraft(drafts);
+  };
+
+  const sostituisciAdminLega = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedLegaForUsers) return;
+    const mailClean = nuovoAdminEmail.trim().toLowerCase();
+    if (!mailClean) return;
+
+    await update(ref(db, `leghe/${selectedLegaForUsers.id}`), {
+      adminEmail: mailClean,
+      adminUid: "", // Verrà associato automaticamente al primo accesso del nuovo admin
+    });
+    alert(`✅ Admin della lega aggiornato a: ${mailClean}`);
+  };
+
+  const salvaEInvitaPartecipanteSlot = async (lega: any, squadra: any, inviaMail: boolean) => {
+    const mailClean = (slotEmailsDraft[squadra.id] ?? squadra.emailProprietario ?? "").trim().toLowerCase();
+    await update(ref(db, `leghe/${lega.id}/squadre/squadra_${squadra.id}`), {
+      emailProprietario: mailClean,
+    });
+
+    if (inviaMail && mailClean) {
+      const linkInvito = `${window.location.origin}/invito/${lega.id}`;
+      try {
+        const res = await fetch("/api/invita", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            emailDestinatario: mailClean,
+            nomeLega: lega.nomeLega,
+            linkInvito,
+            mittente: "Super Admin FantaAsta Pro",
+          }),
+        });
+        const data = await res.json();
+        if (data.sentViaServer) {
+          alert(`✅ Email di invito inviata con successo a ${mailClean}!`);
+        } else {
+          const subject = `Invito Lega Fantacalcio: ${lega.nomeLega}`;
+          const body = `Ciao!\n\nSei stato inserito/invitato nella lega "${lega.nomeLega}" su FantaAsta Pro.\nAccedi da questo link:\n${linkInvito}`;
+          window.open(
+            `mailto:${encodeURIComponent(mailClean)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
+            "_blank"
+          );
+        }
+      } catch {
+        alert("✅ Email salvata nello slot squadra!");
+      }
+    } else {
+      alert("✅ Email partecipante salvata nello slot!");
+    }
+  };
+
   const toggleCoAdminSquadra = async (lega: any, squadra: any) => {
     const mail = (squadra.emailProprietario || "").trim().toLowerCase();
     if (!mail) {
-      alert("Questa squadra non ha ancora un'email partecipante associata.");
+      alert("Inserisci e salva prima un'email partecipante su questo slot.");
       return;
     }
 
@@ -145,7 +287,7 @@ export default function SuperAdminBackoffice() {
       mail === (lega.adminEmail || "").toLowerCase() || coAdmins.map((m) => m.toLowerCase()).includes(mail);
 
     if (mail === (lega.adminEmail || "").toLowerCase()) {
-      alert("Questo utente è il creatore principale della lega (Admin fondatore).");
+      alert("Questo utente è già l'Admin principale della lega.");
       return;
     }
 
@@ -160,20 +302,16 @@ export default function SuperAdminBackoffice() {
 
   const rimuoviPartecipanteDaSquadra = async (legaId: string, squadraId: number) => {
     if (!confirm("Vuoi scollegare questo utente dallo slot squadra?")) return;
+    setSlotEmailsDraft((prev) => ({ ...prev, [squadraId]: "" }));
     await update(ref(db, `leghe/${legaId}/squadre/squadra_${squadraId}`), {
       emailProprietario: "",
     });
   };
 
-  const pulisciChiave = (str: any) => {
-    if (!str) return "";
-    return String(str).replace(/[.#$\[\]\/]/g, "");
-  };
-
-  const pulisciTestoPreservandoAsterisco = (str: any) => {
-    if (!str) return "";
-    return String(str).replace(/[.#$\[\]\/]/g, "").trim();
-  };
+  // --- IMPORTAZIONE LISTONI ---
+  const pulisciChiave = (str: any) => (str ? String(str).replace(/[.#$\[\]\/]/g, "") : "");
+  const pulisciTestoPreservandoAsterisco = (str: any) =>
+    str ? String(str).replace(/[.#$\[\]\/]/g, "").trim() : "";
 
   const importaExcelListone = (file: File, tipo: "classic" | "mantra") => {
     const setLoad = tipo === "classic" ? setLoadingClassic : setLoadingMantra;
@@ -206,7 +344,8 @@ export default function SuperAdminBackoffice() {
             const idPulito = pulisciChiave(rawId);
             const nomePulito = pulisciTestoPreservandoAsterisco(rawNome);
             const isAsterisco =
-              nomePulito.includes("*") || (String(fuoriLista).trim() !== "" && String(fuoriLista).toLowerCase() !== "nan");
+              nomePulito.includes("*") ||
+              (String(fuoriLista).trim() !== "" && String(fuoriLista).toLowerCase() !== "nan");
 
             listone[`giocatore_${idPulito}`] = {
               id: idPulito,
@@ -243,6 +382,7 @@ export default function SuperAdminBackoffice() {
     reader.readAsArrayBuffer(file);
   };
 
+  // --- LOGS ---
   const tuttiILog = leghe
     .flatMap((lega) =>
       (lega.auditLogs || []).map((log: any) => ({
@@ -281,7 +421,6 @@ export default function SuperAdminBackoffice() {
   if (authLoading) {
     return (
       <div className="min-h-screen bg-neutral-950 text-red-500 flex flex-col items-center justify-center font-sans">
-        <i className="fa-solid fa-circle-notch fa-spin text-4xl mb-4"></i>
         <h2 className="font-bold tracking-widest uppercase">Verifica Sicurezza...</h2>
       </div>
     );
@@ -289,8 +428,8 @@ export default function SuperAdminBackoffice() {
 
   if (!adminUser) {
     return (
-      <main className="min-h-screen bg-neutral-950 flex flex-col items-center justify-center p-4 font-sans relative overflow-hidden">
-        <div className="bg-neutral-900 border border-neutral-800 p-8 rounded-2xl shadow-2xl w-full max-w-md relative z-10">
+      <main className="min-h-screen bg-neutral-950 flex flex-col items-center justify-center p-4 font-sans">
+        <div className="bg-neutral-900 border border-neutral-800 p-8 rounded-2xl shadow-2xl w-full max-w-md">
           <div className="text-center mb-6">
             <h1 className="text-3xl font-black text-red-500 tracking-widest uppercase">System Admin</h1>
             <p className="text-neutral-400 mt-2 text-sm">Area riservata al proprietario della piattaforma</p>
@@ -348,12 +487,15 @@ export default function SuperAdminBackoffice() {
     );
   }
 
+  const listaLicenze = Object.entries(licenze);
+  const ticketApertiCount = tickets.filter((t) => t.stato !== "risolto").length;
+
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-4 md:p-8 font-sans">
       <div className="max-w-6xl mx-auto space-y-6">
         
-        {/* HEADER */}
-        <header className="border-b border-red-900/50 pb-5 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+        {/* HEADER CON INTERRUTTORE SITO ONLINE / OFFLINE */}
+        <header className="border-b border-red-900/50 pb-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <h1 className="text-2xl md:text-3xl font-black text-red-500 uppercase tracking-widest">
               Super Admin Area
@@ -362,7 +504,20 @@ export default function SuperAdminBackoffice() {
               Connesso come: <strong className="text-white">{adminUser.email}</strong>
             </p>
           </div>
-          <div className="flex gap-2">
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleSitoOffline}
+              className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider border transition ${
+                sitoOffline
+                  ? "bg-red-600 text-white border-red-400 animate-pulse"
+                  : "bg-emerald-600/20 text-emerald-400 border-emerald-500/40 hover:bg-emerald-600 hover:text-white"
+              }`}
+            >
+              {sitoOffline ? "🔴 Sito OFFLINE (Clicca per Mettere Online)" : "🟢 Sito ONLINE (Clicca per Mettere Offline)"}
+            </button>
+
             <button
               onClick={() => router.push("/")}
               className="bg-neutral-800 hover:bg-neutral-700 text-neutral-300 px-3 py-2 rounded border border-neutral-700 text-xs font-bold uppercase"
@@ -378,35 +533,51 @@ export default function SuperAdminBackoffice() {
           </div>
         </header>
 
-        {/* BARRA NAVIGAZIONE A SCHEDE IN ALTO */}
+        {/* BARRA NAVIGAZIONE A SCHEDE */}
         <nav className="flex flex-wrap gap-2 bg-neutral-900 p-1.5 rounded-xl border border-neutral-800">
           <button
             onClick={() => setActiveTab("leghe")}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition ${
+            className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-black uppercase tracking-wider transition ${
               activeTab === "leghe" ? "bg-blue-600 text-white shadow" : "text-neutral-400 hover:text-white"
             }`}
           >
             Leghe & Utenti ({leghe.length})
           </button>
           <button
+            onClick={() => setActiveTab("licenze")}
+            className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-black uppercase tracking-wider transition ${
+              activeTab === "licenze" ? "bg-purple-600 text-white shadow" : "text-neutral-400 hover:text-white"
+            }`}
+          >
+            Licenze Admin ({listaLicenze.length})
+          </button>
+          <button
             onClick={() => setActiveTab("listoni")}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition ${
+            className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-black uppercase tracking-wider transition ${
               activeTab === "listoni" ? "bg-emerald-600 text-white shadow" : "text-neutral-400 hover:text-white"
             }`}
           >
             Listoni Classic & Mantra
           </button>
           <button
+            onClick={() => setActiveTab("ticket")}
+            className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-black uppercase tracking-wider transition ${
+              activeTab === "ticket" ? "bg-sky-600 text-white shadow" : "text-neutral-400 hover:text-white"
+            }`}
+          >
+            Supporto ({ticketApertiCount})
+          </button>
+          <button
             onClick={() => setActiveTab("logs")}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition ${
+            className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-black uppercase tracking-wider transition ${
               activeTab === "logs" ? "bg-amber-500 text-neutral-950 shadow" : "text-neutral-400 hover:text-white"
             }`}
           >
-            Registro Log & Audit ({tuttiILog.length})
+            Log ({tuttiILog.length})
           </button>
         </nav>
 
-        {/* TAB 1: GESTIONE LEGHE & RUOLI UTENTI */}
+        {/* TAB 1: GESTIONE LEGHE & UTENTI */}
         {activeTab === "leghe" && (
           <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl">
             <h2 className="text-lg font-bold text-white mb-4">Leghe Attive sulla Piattaforma</h2>
@@ -447,10 +618,10 @@ export default function SuperAdminBackoffice() {
                         <td className="px-4 py-4 text-right">
                           <div className="flex justify-end gap-2">
                             <button
-                              onClick={() => setSelectedLegaForUsers(lega)}
+                              onClick={() => apriModalUtentiLega(lega)}
                               className="bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-600/40 px-3 py-2 rounded text-xs font-bold transition"
                             >
-                              Utenti / Ruoli
+                              Utenti / Inviti / Admin
                             </button>
                             <button
                               onClick={() => entraNellaLega(lega.id)}
@@ -475,13 +646,122 @@ export default function SuperAdminBackoffice() {
           </section>
         )}
 
-        {/* TAB 2: CARICAMENTO LISTONI */}
+        {/* TAB 2: GESTIONE LICENZE ADMIN */}
+        {activeTab === "licenze" && (
+          <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl space-y-6">
+            <div>
+              <h2 className="text-lg font-bold text-white">Gestione Licenze Acquistate</h2>
+              <p className="text-xs text-neutral-400">
+                Solo gli utenti con una licenza attiva possono creare nuove leghe (fino al numero massimo acquistato). Tutti gli altri accedono solo come partecipanti invitati.
+              </p>
+            </div>
+
+            <form onSubmit={salvaLicenza} className="bg-neutral-950 p-4 rounded-xl border border-neutral-800 grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+              <div className="md:col-span-2">
+                <label className="block text-[10px] font-bold text-neutral-400 uppercase mb-1">Email Cliente / Admin</label>
+                <input
+                  type="email"
+                  required
+                  value={licEmail}
+                  onChange={(e) => setLicEmail(e.target.value)}
+                  placeholder="cliente@gmail.com"
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2.5 text-sm text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-neutral-400 uppercase mb-1">Max Leghe Consentite</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  required
+                  value={licMaxLeghe}
+                  onChange={(e) => setLicMaxLeghe(e.target.value)}
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2.5 text-sm text-white font-bold text-center"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-neutral-400 uppercase mb-1">Stagione / Note</label>
+                <input
+                  type="text"
+                  value={licNote}
+                  onChange={(e) => setLicNote(e.target.value)}
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2.5 text-sm text-white"
+                />
+              </div>
+              <div className="md:col-span-4">
+                <button
+                  type="submit"
+                  className="w-full bg-purple-600 hover:bg-purple-500 text-white font-black uppercase py-3 rounded-xl text-xs tracking-wider"
+                >
+                  Attiva / Aggiorna Licenza
+                </button>
+              </div>
+            </form>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-neutral-300">
+                <thead className="bg-neutral-950 text-neutral-500 uppercase">
+                  <tr>
+                    <th className="p-3">Email Admin</th>
+                    <th className="p-3 text-center">Leghe Consentite</th>
+                    <th className="p-3">Stagione / Note</th>
+                    <th className="p-3 text-center">Stato</th>
+                    <th className="p-3 text-right">Azioni</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-800">
+                  {listaLicenze.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="p-6 text-center text-neutral-600 italic">
+                        Nessuna licenza inserita (tu come Super Admin hai sempre accesso illimitato).
+                      </td>
+                    </tr>
+                  ) : (
+                    listaLicenze.map(([chiave, lic]: [string, any]) => (
+                      <tr key={chiave}>
+                        <td className="p-3 font-bold text-white">{lic.email}</td>
+                        <td className="p-3 text-center font-black text-amber-400 text-sm">{lic.maxLeghe}</td>
+                        <td className="p-3 text-neutral-400">{lic.note}</td>
+                        <td className="p-3 text-center">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                              lic.attiva ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
+                            }`}
+                          >
+                            {lic.attiva ? "Attiva" : "Sospesa"}
+                          </span>
+                        </td>
+                        <td className="p-3 text-right space-x-2">
+                          <button
+                            onClick={() => toggleStatoLicenza(chiave, lic.attiva)}
+                            className="bg-neutral-800 hover:bg-neutral-700 px-2.5 py-1 rounded text-xs font-bold"
+                          >
+                            {lic.attiva ? "Sospendi" : "Riattiva"}
+                          </button>
+                          <button
+                            onClick={() => eliminaLicenza(chiave)}
+                            className="bg-red-950 hover:bg-red-600 text-red-300 hover:text-white px-2.5 py-1 rounded text-xs font-bold"
+                          >
+                            Elimina
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {/* TAB 3: CARICAMENTO LISTONI */}
         {activeTab === "listoni" && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl space-y-4">
               <h2 className="text-xl font-bold text-white">Listone Modalità CLASSIC</h2>
               <p className="text-xs text-neutral-400">
-                Carica il file Excel (.xlsx) del listone Classic. Il sistema mantiene l'asterisco <strong>*</strong> sui calciatori ceduti all'estero o in serie minori.
+                Carica il file Excel (.xlsx) del listone Classic. Mantiene l'asterisco <strong>*</strong> sui calciatori ceduti all'estero o in serie minori.
               </p>
               <div className="border-2 border-dashed border-neutral-700 rounded-xl p-6 text-center bg-neutral-950/50">
                 <input
@@ -505,7 +785,7 @@ export default function SuperAdminBackoffice() {
             <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl space-y-4">
               <h2 className="text-xl font-bold text-white">Listone Modalità MANTRA</h2>
               <p className="text-xs text-neutral-400">
-                Carica il file Excel (.xlsx) del listone Mantra (con colonna <code>R.MANTRA</code>) per le leghe che giocano in modalità Mantra.
+                Carica il file Excel (.xlsx) del listone Mantra (con colonna <code>R.MANTRA</code>).
               </p>
               <div className="border-2 border-dashed border-neutral-700 rounded-xl p-6 text-center bg-neutral-950/50">
                 <input
@@ -528,17 +808,62 @@ export default function SuperAdminBackoffice() {
           </div>
         )}
 
-        {/* TAB 3: REGISTRO LOG */}
+        {/* TAB 4: TICKET SUPPORTO */}
+        {activeTab === "ticket" && (
+          <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl space-y-4">
+            <h2 className="text-lg font-bold text-white">Segnalazioni & Richieste Supporto ({tickets.length})</h2>
+            <div className="divide-y divide-neutral-800">
+              {tickets.length === 0 ? (
+                <p className="py-8 text-center text-neutral-500 italic text-sm">Nessuna segnalazione ricevuta.</p>
+              ) : (
+                tickets.map((t) => (
+                  <div key={t.id} className="py-4 flex flex-col sm:flex-row justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-black uppercase bg-sky-500/20 text-sky-300 px-2 py-0.5 rounded">
+                          {t.categoria}
+                        </span>
+                        <span className="text-xs font-bold text-white">{t.utenteEmail}</span>
+                        <span className="text-[11px] text-neutral-500">
+                          • {new Date(t.createdAt).toLocaleString("it-IT")}
+                        </span>
+                      </div>
+                      <p className="text-sm text-neutral-300">{t.messaggio}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() =>
+                          update(ref(db, `impostazioni_globali/ticket_supporto/${t.id}`), {
+                            stato: t.stato === "risolto" ? "aperto" : "risolto",
+                          })
+                        }
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold ${
+                          t.stato === "risolto"
+                            ? "bg-emerald-600/20 text-emerald-400"
+                            : "bg-amber-500 text-neutral-950"
+                        }`}
+                      >
+                        {t.stato === "risolto" ? "✓ Risolto" : "Segna Risolto"}
+                      </button>
+                      <button
+                        onClick={() => remove(ref(db, `impostazioni_globali/ticket_supporto/${t.id}`))}
+                        className="bg-red-950 hover:bg-red-600 text-red-300 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold"
+                      >
+                        Elimina
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* TAB 5: LOG */}
         {activeTab === "logs" && (
           <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-              <div>
-                <h2 className="text-lg font-bold text-white">Registro Operazioni Aste & Riparazioni</h2>
-                <p className="text-xs text-neutral-400">
-                  Cronologia completa di assegnazioni, svincoli e sessioni per verifiche e assistenza.
-                </p>
-              </div>
-
+              <h2 className="text-lg font-bold text-white">Registro Operazioni Aste & Riparazioni</h2>
               <div className="flex flex-wrap gap-2">
                 <select
                   value={selectedLegaForLogs}
@@ -552,11 +877,10 @@ export default function SuperAdminBackoffice() {
                     </option>
                   ))}
                 </select>
-
                 <button
                   onClick={scaricaLogCSV}
                   disabled={tuttiILog.length === 0}
-                  className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-neutral-950 px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition"
+                  className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-neutral-950 px-4 py-2 rounded-lg text-xs font-black uppercase"
                 >
                   Scarica Log (.CSV)
                 </button>
@@ -576,26 +900,18 @@ export default function SuperAdminBackoffice() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-800">
-                  {tuttiILog.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="p-8 text-center text-neutral-600 italic">
-                        Nessun evento registrato nei log.
+                  {tuttiILog.map((log, idx) => (
+                    <tr key={idx}>
+                      <td className="p-3 font-mono text-neutral-400 whitespace-nowrap">
+                        {new Date(log.timestamp).toLocaleString("it-IT")}
                       </td>
+                      <td className="p-3 font-bold text-white">{log.nomeLega}</td>
+                      <td className="p-3 text-blue-400">{log.fase || "Prima Asta"}</td>
+                      <td className="p-3 font-bold text-amber-400">{log.azione}</td>
+                      <td className="p-3">{log.dettaglio}</td>
+                      <td className="p-3 text-neutral-400">{log.autore}</td>
                     </tr>
-                  ) : (
-                    tuttiILog.map((log, idx) => (
-                      <tr key={idx} className="hover:bg-neutral-800/40">
-                        <td className="p-3 font-mono text-neutral-400 whitespace-nowrap">
-                          {new Date(log.timestamp).toLocaleString("it-IT")}
-                        </td>
-                        <td className="p-3 font-bold text-white">{log.nomeLega}</td>
-                        <td className="p-3 text-blue-400 font-semibold">{log.fase || "Prima Asta"}</td>
-                        <td className="p-3 font-bold uppercase text-amber-400">{log.azione}</td>
-                        <td className="p-3">{log.dettaglio}</td>
-                        <td className="p-3 text-neutral-400">{log.autore}</td>
-                      </tr>
-                    ))
-                  )}
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -603,7 +919,7 @@ export default function SuperAdminBackoffice() {
         )}
       </div>
 
-      {/* MODAL GESTIONE UTENTI E RUOLI DI UNA LEGA (Con X Chiudi e pulsante Chiudi in basso) */}
+      {/* MODAL GESTIONE UTENTI, SOSTITUZIONE ADMIN E INVITO PARTECIPANTI */}
       {selectedLegaForUsers && (
         <div
           onClick={() => setSelectedLegaForUsers(null)}
@@ -611,93 +927,123 @@ export default function SuperAdminBackoffice() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-neutral-900 rounded-2xl shadow-2xl border border-neutral-700 w-full max-w-2xl overflow-hidden max-h-[85vh] flex flex-col"
+            className="bg-neutral-900 rounded-2xl shadow-2xl border border-neutral-700 w-full max-w-3xl overflow-hidden max-h-[88vh] flex flex-col"
           >
             <div className="bg-neutral-800 p-4 flex justify-between items-center border-b border-neutral-700">
               <div>
                 <h3 className="text-lg font-black text-white">
-                  Gestione Ruoli • <span className="text-amber-400">{selectedLegaForUsers.nomeLega}</span>
+                  Gestione Utenti & Admin • <span className="text-amber-400">{selectedLegaForUsers.nomeLega}</span>
                 </h3>
-                <p className="text-xs text-neutral-400">
-                  Admin Fondatore: <strong>{selectedLegaForUsers.adminEmail}</strong>
-                </p>
               </div>
               <button
                 type="button"
                 onClick={() => setSelectedLegaForUsers(null)}
-                className="bg-neutral-950 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase transition"
+                className="bg-neutral-950 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase"
               >
                 ✕ Chiudi
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto divide-y divide-neutral-800 flex-1">
-              {(selectedLegaForUsers.squadre ? Object.values(selectedLegaForUsers.squadre) : []).map((sq: any) => {
-                const mail = (sq.emailProprietario || "").trim().toLowerCase();
-                const coAdmins: string[] = Array.isArray(selectedLegaForUsers.coAdmins)
-                  ? selectedLegaForUsers.coAdmins.map((m: string) => m.toLowerCase())
-                  : [];
-                const isFounder = mail && mail === (selectedLegaForUsers.adminEmail || "").toLowerCase();
-                const isCoAdmin = mail && (isFounder || coAdmins.includes(mail));
+            <div className="p-4 overflow-y-auto space-y-5 flex-1">
+              {/* Sostituzione Admin Principale */}
+              <form onSubmit={sostituisciAdminLega} className="bg-neutral-950 p-4 rounded-xl border border-neutral-800 space-y-2">
+                <label className="block text-[10px] font-black uppercase text-amber-400">
+                  Admin Fondatore della Lega (Sostituisci Email Admin)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    required
+                    value={nuovoAdminEmail}
+                    onChange={(e) => setNuovoAdminEmail(e.target.value)}
+                    className="flex-1 bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-xs text-white"
+                  />
+                  <button
+                    type="submit"
+                    className="bg-amber-500 hover:bg-amber-400 text-neutral-950 font-black px-4 py-2 rounded-lg text-xs uppercase"
+                  >
+                    Aggiorna Admin
+                  </button>
+                </div>
+              </form>
 
-                return (
-                  <div key={sq.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div>
-                      <div className="font-bold text-white text-sm flex items-center gap-2">
-                        <span>{sq.nome}</span>
-                        {mail ? (
-                          <span
-                            className={`text-[10px] px-2 py-0.5 rounded-full font-black uppercase ${
-                              isCoAdmin
-                                ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
-                                : "bg-blue-500/20 text-blue-300 border border-blue-500/40"
-                            }`}
-                          >
-                            {isCoAdmin ? "Admin + Giocatore" : "Solo Giocatore"}
-                          </span>
-                        ) : (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-500">
-                            Slot Libero
+              {/* Elenco Slot Squadre con inserimento/sostituzione email e tasto Invita */}
+              <div className="divide-y divide-neutral-800">
+                {(selectedLegaForUsers.squadre ? Object.values(selectedLegaForUsers.squadre) : []).map((sq: any) => {
+                  const mailSalvata = (sq.emailProprietario || "").trim().toLowerCase();
+                  const mailInput = slotEmailsDraft[sq.id] ?? mailSalvata;
+                  const coAdmins: string[] = Array.isArray(selectedLegaForUsers.coAdmins)
+                    ? selectedLegaForUsers.coAdmins.map((m: string) => m.toLowerCase())
+                    : [];
+                  const isCoAdmin = mailSalvata && coAdmins.includes(mailSalvata);
+
+                  return (
+                    <div key={sq.id} className="py-3 space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="font-bold text-white text-sm">
+                          Slot #{sq.id + 1}: {sq.nome}
+                        </span>
+                        {mailSalvata && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-bold uppercase">
+                            {isCoAdmin ? "Admin + Giocatore" : "Giocatore"}
                           </span>
                         )}
                       </div>
-                      <div className="text-xs text-neutral-400 mt-0.5">
-                        {mail || "Nessun partecipante registrato"}
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="email"
+                          value={mailInput}
+                          onChange={(e) => setSlotEmailsDraft((prev) => ({ ...prev, [sq.id]: e.target.value }))}
+                          placeholder="Inserisci o sostituisci email partecipante..."
+                          className="flex-1 bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs text-white"
+                        />
+                        <div className="flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => salvaEInvitaPartecipanteSlot(selectedLegaForUsers, sq, false)}
+                            className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded-lg text-xs font-bold"
+                          >
+                            Salva
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => salvaEInvitaPartecipanteSlot(selectedLegaForUsers, sq, true)}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 rounded-lg text-xs font-black uppercase"
+                          >
+                            Invita
+                          </button>
+                          {mailSalvata && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => toggleCoAdminSquadra(selectedLegaForUsers, sq)}
+                                className="bg-neutral-800 hover:bg-neutral-700 text-amber-300 px-2.5 py-2 rounded-lg text-xs font-bold"
+                              >
+                                {isCoAdmin ? "Togli Admin" : "+ Admin"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => rimuoviPartecipanteDaSquadra(selectedLegaForUsers.id, sq.id)}
+                                className="bg-red-950 hover:bg-red-600 text-red-300 hover:text-white px-2.5 py-2 rounded-lg text-xs font-bold"
+                              >
+                                Rimuovi
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
-
-                    {mail && (
-                      <div className="flex gap-2">
-                        {!isFounder && (
-                          <button
-                            onClick={() => toggleCoAdminSquadra(selectedLegaForUsers, sq)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                              isCoAdmin
-                                ? "bg-neutral-800 hover:bg-neutral-700 text-neutral-300"
-                                : "bg-amber-600 hover:bg-amber-500 text-white"
-                            }`}
-                          >
-                            {isCoAdmin ? "Rimuovi Admin" : "Promuovi ad Admin"}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => rimuoviPartecipanteDaSquadra(selectedLegaForUsers.id, sq.id)}
-                          className="bg-red-950/60 hover:bg-red-600 text-red-300 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition"
-                        >
-                          Scollega
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
 
             <div className="p-4 bg-neutral-950 border-t border-neutral-800">
               <button
                 type="button"
                 onClick={() => setSelectedLegaForUsers(null)}
-                className="w-full bg-neutral-800 hover:bg-neutral-700 text-white font-bold py-2.5 rounded-xl text-xs uppercase tracking-wider"
+                className="w-full bg-neutral-800 hover:bg-neutral-700 text-white font-bold py-2.5 rounded-xl text-xs uppercase"
               >
                 Chiudi e Torna alle Leghe
               </button>

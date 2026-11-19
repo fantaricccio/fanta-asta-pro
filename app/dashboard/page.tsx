@@ -7,6 +7,7 @@ import { onAuthStateChanged, User } from "firebase/auth";
 import { db, auth } from "../../lib/firebase";
 import { sanitizeImageUrl, sanitizeText } from "../../lib/security";
 import ThemeToggle from "../../components/ThemeToggle";
+import SupportModal from "../../components/SupportModal";
 
 const SUPER_ADMIN_EMAIL = "fantaricccio@gmail.com";
 
@@ -24,13 +25,20 @@ export default function DashboardLega() {
   const [filtroSquadraId, setFiltroSquadraId] = useState<string>("TUTTE");
   const [brokenLogos, setBrokenLogos] = useState<Record<number, boolean>>({});
 
-  // Modal Modifica Squadra
+  // Modal Modifica Squadra (Admin su tutte, Partecipante SOLO sulla propria)
   const [editingTeam, setEditingTeam] = useState<any>(null);
   const [editNome, setEditNome] = useState("");
   const [editAllenatore, setEditAllenatore] = useState("");
   const [editEmailProprietario, setEditEmailProprietario] = useState("");
   const [editLogo, setEditLogo] = useState("");
   const [logoErrorMsg, setLogoErrorMsg] = useState("");
+
+  // Modal Albo d'Oro Storico
+  const [showAlboDoro, setShowAlboDoro] = useState(false);
+  const [alboStagione, setAlboStagione] = useState("2025/2026");
+  const [alboPrimo, setAlboPrimo] = useState("");
+  const [alboSecondo, setAlboSecondo] = useState("");
+  const [alboTerzo, setAlboTerzo] = useState("");
 
   // Modal Impostazioni Asta
   const [showSettings, setShowSettings] = useState(false);
@@ -45,6 +53,7 @@ export default function DashboardLega() {
   const [linkCopiato, setLinkCopiato] = useState(false);
   const [messaggioCopiato, setMessaggioCopiato] = useState(false);
   const [inviteEmailDest, setInviteEmailDest] = useState("");
+  const [invioEmailInCorso, setInvioEmailInCorso] = useState(false);
 
   // Gestione Sessioni Riparazione & Svincoli
   const [showRiparazioneManager, setShowRiparazioneManager] = useState(false);
@@ -187,6 +196,38 @@ export default function DashboardLega() {
     });
   };
 
+  // --- ALBO D'ORO STORICO ---
+  const alboDoroLista: any[] = lega?.alboDoro || [];
+
+  const aggiungiVoceAlboDoro = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!legaId || !isAdminLega || !alboPrimo.trim()) return;
+
+    const nuovaVoce = {
+      id: `albo_${Date.now()}`,
+      stagione: sanitizeText(alboStagione, 30),
+      primo: sanitizeText(alboPrimo, 50),
+      secondo: sanitizeText(alboSecondo, 50),
+      terzo: sanitizeText(alboTerzo, 50),
+    };
+
+    await update(ref(db, `leghe/${legaId}`), {
+      alboDoro: [nuovaVoce, ...alboDoroLista],
+    });
+
+    setAlboPrimo("");
+    setAlboSecondo("");
+    setAlboTerzo("");
+  };
+
+  const eliminaVoceAlboDoro = async (idVoce: string) => {
+    if (!legaId || !isAdminLega) return;
+    await update(ref(db, `leghe/${legaId}`), {
+      alboDoro: alboDoroLista.filter((v) => v.id !== idVoce),
+    });
+  };
+
+  // --- RESET COMPLETO ---
   const eseguiResetCompletoAsta = async () => {
     if (!legaId || !lega || !isAdminLega) return;
 
@@ -228,7 +269,7 @@ export default function DashboardLega() {
       await scriviLog("RESET COMPLETO ASTA", "Azzerate tutte le rose e ripristinati i budget iniziali", "Prima Asta");
 
       setShowSettings(false);
-      alert("✅ Reset completato! Tutte le rose sono state svuotate e i crediti ripristinati.");
+      alert("✅ Reset completato!");
     } catch (error) {
       console.error(error);
       alert("❌ Errore durante il reset dell'asta.");
@@ -265,11 +306,23 @@ export default function DashboardLega() {
     URL.revokeObjectURL(url);
   };
 
+  // --- MODIFICA SQUADRA (Admin su tutte; Partecipante SOLO sulla propria) ---
   const salvaModificheSquadra = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!legaId || !editingTeam || !isAdminLega) return;
-    setLogoErrorMsg("");
+    if (!legaId || !editingTeam) return;
 
+    const eLaMiaSquadra = Boolean(
+      user?.email &&
+        editingTeam.emailProprietario &&
+        editingTeam.emailProprietario.toLowerCase().trim() === user.email.toLowerCase().trim()
+    );
+
+    if (!isAdminLega && !eLaMiaSquadra) {
+      alert("⛔ Puoi modificare solo la tua squadra!");
+      return;
+    }
+
+    setLogoErrorMsg("");
     const cleanLogo = sanitizeImageUrl(editLogo);
     if (editLogo.trim() !== "" && !cleanLogo) {
       setLogoErrorMsg("⚠️ URL non valido: inserisci un indirizzo web completo che inizi con https://");
@@ -278,13 +331,19 @@ export default function DashboardLega() {
 
     setBrokenLogos((prev) => ({ ...prev, [editingTeam.id]: false }));
     const teamRef = ref(db, `leghe/${legaId}/squadre/squadra_${editingTeam.id}`);
-    await update(teamRef, {
+
+    const payload: Record<string, any> = {
       nome: sanitizeText(editNome, 40) || editingTeam.nome,
       allenatore: sanitizeText(editAllenatore, 50),
-      emailProprietario: editEmailProprietario.trim().toLowerCase(),
       logo: cleanLogo,
-    });
+    };
 
+    // Solo l'Admin può cambiare l'email proprietario dello slot
+    if (isAdminLega) {
+      payload.emailProprietario = editEmailProprietario.trim().toLowerCase();
+    }
+
+    await update(teamRef, payload);
     setEditingTeam(null);
   };
 
@@ -346,18 +405,43 @@ export default function DashboardLega() {
     window.open(`https://wa.me/?text=${encodeURIComponent(testo)}`, "_blank");
   };
 
-  const inviaInvitoViaEmail = (e: React.FormEvent) => {
+  const inviaInvitoViaEmail = async (e: React.FormEvent) => {
     e.preventDefault();
+    const dest = inviteEmailDest.trim();
+    if (!dest) return;
+
     const url = getInviteUrl();
-    const oggetto = `Invito Lega Fantacalcio: ${lega?.nomeLega}`;
-    const corpo = `Ciao!\n\nSei stato invitato a partecipare alla lega "${lega?.nomeLega}" su FantaAsta Pro.\n\nClicca sul link qui sotto per registrarti e scegliere la tua squadra:\n${url}\n\nA presto!`;
-    window.open(
-      `mailto:${encodeURIComponent(inviteEmailDest)}?subject=${encodeURIComponent(oggetto)}&body=${encodeURIComponent(corpo)}`,
-      "_blank"
-    );
-    setInviteEmailDest("");
+    setInvioEmailInCorso(true);
+    try {
+      const res = await fetch("/api/invita", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emailDestinatario: dest,
+          nomeLega: lega?.nomeLega,
+          linkInvito: url,
+          mittente: lega?.adminName || user?.email,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.sentViaServer) {
+        alert(`✅ Invito inviato via email a ${dest}!`);
+      } else {
+        const oggetto = `Invito Lega Fantacalcio: ${lega?.nomeLega}`;
+        const corpo = `Ciao!\n\nSei stato invitato a partecipare alla lega "${lega?.nomeLega}" su FantaAsta Pro.\n\nClicca sul link qui sotto per registrarti e scegliere la tua squadra:\n${url}\n\nA presto!`;
+        window.open(
+          `mailto:${encodeURIComponent(dest)}?subject=${encodeURIComponent(oggetto)}&body=${encodeURIComponent(corpo)}`,
+          "_blank"
+        );
+      }
+      setInviteEmailDest("");
+    } finally {
+      setInvioEmailInCorso(false);
+    }
   };
 
+  // --- RIPARAZIONE & SVINCOLI ---
   const sessioniRiparazione: any[] = lega?.sessioniRiparazione || [];
   const sessioneAttiva = sessioniRiparazione.find((s) => s.attiva);
 
@@ -613,12 +697,12 @@ export default function DashboardLega() {
     <main className="min-h-screen bg-slate-950 text-slate-100 p-2.5 md:p-4 font-sans relative">
       <div className="w-full space-y-3">
         
+        {/* HEADER DINAMICO */}
         <header className="flex flex-col xl:flex-row justify-between items-center bg-slate-900 p-3.5 rounded-xl border border-slate-800 shadow-lg gap-3">
           <div className="flex items-center gap-3 w-full xl:w-auto">
             <button
               onClick={() => router.push("/")}
               className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-3 py-2 rounded-lg border border-slate-700 text-xs font-bold transition shrink-0"
-              title="Torna al Portale Leghe"
             >
               ← Esci
             </button>
@@ -648,14 +732,23 @@ export default function DashboardLega() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto justify-end">
+            <SupportModal nomeLega={lega?.nomeLega} />
             <ThemeToggle />
+
+            <button
+              type="button"
+              onClick={() => setShowAlboDoro(true)}
+              className="bg-amber-500/15 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/40 px-3 py-2 rounded-lg text-xs font-black uppercase transition"
+            >
+              🏆 Albo d'Oro
+            </button>
 
             <select
               value={filtroSquadraId}
               onChange={(e) => setFiltroSquadraId(e.target.value)}
               className="bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold rounded-lg px-3 py-2 focus:outline-none focus:border-amber-400"
             >
-              <option value="TUTTE">Tutte le squadre ({squadre.length})</option>
+              <option value="TUTTE">Tutte ({squadre.length})</option>
               {squadre.map((sq) => (
                 <option key={sq.id} value={sq.id}>
                   Solo: {sq.nome}
@@ -719,6 +812,7 @@ export default function DashboardLega() {
           </div>
         </header>
 
+        {/* BANNER SVINCOLI ATTIVI */}
         {(modalitaSvincoliAdmin && isAdminLega) || finestraPartecipantiAperta ? (
           <div className="bg-rose-950/80 border border-rose-600/70 rounded-xl px-4 py-3 flex flex-col sm:flex-row justify-between items-center gap-2 text-xs">
             <div className="text-rose-100">
@@ -743,17 +837,18 @@ export default function DashboardLega() {
           </div>
         ) : null}
 
-        {/* TABELLONE ROSE */}
+        {/* TABELLONE ROSE: SEMPRE AFFIANCATO IN ORIZZONTALE ANCHE SU CELLULARE */}
         <div
-          className={`flex flex-col md:flex-row md:flex-nowrap gap-2.5 md:overflow-x-auto pb-3 ${
-            squadreVisibili.length === 1 ? "md:justify-center" : ""
+          className={`flex flex-row flex-nowrap gap-2.5 overflow-x-auto pb-3 ${
+            squadreVisibili.length === 1 ? "justify-center" : ""
           }`}
         >
           {squadreVisibili.map((squadra) => {
             const mancantiTotali = Math.max(0, squadra.slotTotali - squadra.giocatoriOccupati);
             const maxOfferta = getOffertaMassima(squadra);
-            const isMia = miaSquadra && miaSquadra.id === squadra.id;
+            const isMia = Boolean(miaSquadra && miaSquadra.id === squadra.id);
             const isOnline = onlineSquadreIds.includes(Number(squadra.id));
+            const puoModificareQuestaSquadra = isAdminLega || isMia;
             const puoSvincolareQuestaSquadra =
               (modalitaSvincoliAdmin && isAdminLega) || (finestraPartecipantiAperta && isMia);
             const safeLogoUrl = sanitizeImageUrl(squadra.logo);
@@ -767,7 +862,7 @@ export default function DashboardLega() {
                     : isMia
                     ? "border-amber-500/60"
                     : "border-slate-800"
-                } ${squadreVisibili.length === 1 ? "w-full max-w-md" : "w-full md:flex-1 md:min-w-[235px]"}`}
+                } ${squadreVisibili.length === 1 ? "w-full max-w-md" : "min-w-[235px] flex-1"}`}
               >
                 <div className="bg-slate-800/90 p-2.5 border-b border-slate-700">
                   <div className="flex items-center justify-between gap-1.5 mb-2">
@@ -810,10 +905,11 @@ export default function DashboardLega() {
                       </div>
                     </div>
 
-                    {isAdminLega && (
+                    {puoModificareQuestaSquadra && (
                       <button
                         onClick={() => apriModalEdit(squadra)}
                         className="bg-slate-700 hover:bg-slate-600 text-slate-200 hover:text-white px-2 py-1 rounded-md border border-slate-600 text-[10px] font-bold transition shrink-0"
+                        title={isAdminLega ? "Configura Squadra" : "Modifica il nome della tua squadra"}
                       >
                         Modifica
                       </button>
@@ -945,7 +1041,7 @@ export default function DashboardLega() {
         </div>
       </div>
 
-      {/* MODAL 1: CONFIGURAZIONE SQUADRA */}
+      {/* MODAL 1: CONFIGURAZIONE SQUADRA (Admin vede email proprietario; Partecipante modifica solo nome/allenatore/logo della propria) */}
       {editingTeam && (
         <div
           onClick={() => setEditingTeam(null)}
@@ -956,7 +1052,9 @@ export default function DashboardLega() {
             className="bg-slate-800 rounded-2xl shadow-2xl border border-slate-600 w-full max-w-md overflow-hidden"
           >
             <div className="bg-slate-700 p-4 flex justify-between items-center border-b border-slate-600">
-              <h3 className="text-lg font-bold text-white">Configura Squadra</h3>
+              <h3 className="text-lg font-bold text-white">
+                {isAdminLega ? "Configura Squadra" : "Personalizza la Tua Squadra"}
+              </h3>
               <button
                 type="button"
                 onClick={() => setEditingTeam(null)}
@@ -988,15 +1086,17 @@ export default function DashboardLega() {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Email Partecipante</label>
-                <input
-                  type="email"
-                  value={editEmailProprietario}
-                  onChange={(e) => setEditEmailProprietario(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white text-sm"
-                />
-              </div>
+              {isAdminLega && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Email Partecipante</label>
+                  <input
+                    type="email"
+                    value={editEmailProprietario}
+                    onChange={(e) => setEditEmailProprietario(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white text-sm"
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Link Diretto Immagine Logo</label>
@@ -1029,6 +1129,111 @@ export default function DashboardLega() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL ALBO D'ORO STORICO */}
+      {showAlboDoro && (
+        <div
+          onClick={() => setShowAlboDoro(false)}
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-800 rounded-2xl shadow-2xl border border-amber-500/40 w-full max-w-lg overflow-hidden max-h-[88vh] flex flex-col"
+          >
+            <div className="bg-gradient-to-r from-amber-600 to-yellow-700 p-4 flex justify-between items-center">
+              <h3 className="text-lg font-black text-white">🏆 Albo d'Oro • {lega?.nomeLega}</h3>
+              <button
+                type="button"
+                onClick={() => setShowAlboDoro(false)}
+                className="bg-black/30 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase"
+              >
+                ✕ Chiudi
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-5 flex-1">
+              {isAdminLega && (
+                <form onSubmit={aggiungiVoceAlboDoro} className="bg-slate-950 p-4 rounded-xl border border-slate-700 space-y-3">
+                  <div className="text-[10px] font-black uppercase text-amber-400">Registra Podio Stagione</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      required
+                      value={alboStagione}
+                      onChange={(e) => setAlboStagione(e.target.value)}
+                      placeholder="Stagione (es. 2025/2026)"
+                      className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white font-bold"
+                    />
+                    <input
+                      type="text"
+                      required
+                      value={alboPrimo}
+                      onChange={(e) => setAlboPrimo(e.target.value)}
+                      placeholder="🥇 1° Classificato"
+                      className="bg-slate-900 border border-amber-500/50 rounded-lg p-2 text-xs text-white font-bold"
+                    />
+                    <input
+                      type="text"
+                      value={alboSecondo}
+                      onChange={(e) => setAlboSecondo(e.target.value)}
+                      placeholder="🥈 2° Classificato"
+                      className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                    />
+                    <input
+                      type="text"
+                      value={alboTerzo}
+                      onChange={(e) => setAlboTerzo(e.target.value)}
+                      placeholder="🥉 3° Classificato"
+                      className="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-black uppercase py-2.5 rounded-lg text-xs"
+                  >
+                    Aggiungi all'Albo d'Oro
+                  </button>
+                </form>
+              )}
+
+              <div className="space-y-2.5">
+                {alboDoroLista.length === 0 ? (
+                  <p className="text-xs text-slate-400 italic text-center py-6">
+                    Nessuna stagione registrata nell'Albo d'Oro di questa lega.
+                  </p>
+                ) : (
+                  alboDoroLista.map((voce) => (
+                    <div
+                      key={voce.id}
+                      className="bg-slate-950 border border-slate-700 rounded-xl p-3.5 flex justify-between items-center"
+                    >
+                      <div>
+                        <div className="text-xs font-black uppercase text-amber-400">{voce.stagione}</div>
+                        <div className="text-sm font-black text-white mt-0.5">🥇 {voce.primo}</div>
+                        {(voce.secondo || voce.terzo) && (
+                          <div className="text-xs text-slate-400 mt-0.5">
+                            {voce.secondo && <span className="mr-3">🥈 {voce.secondo}</span>}
+                            {voce.terzo && <span>🥉 {voce.terzo}</span>}
+                          </div>
+                        )}
+                      </div>
+                      {isAdminLega && (
+                        <button
+                          type="button"
+                          onClick={() => eliminaVoceAlboDoro(voce.id)}
+                          className="bg-red-950/60 hover:bg-red-600 text-red-300 hover:text-white px-2.5 py-1 rounded text-xs font-bold"
+                        >
+                          Elimina
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1145,9 +1350,6 @@ export default function DashboardLega() {
 
               <div className="pt-4 mt-4 border-t border-slate-700 space-y-2">
                 <div className="text-[10px] font-black uppercase tracking-wider text-rose-400">Zona Reset Asta</div>
-                <p className="text-[11px] text-slate-400">
-                  Azzera tutte le rose e riporta ogni squadra a <strong>{lega?.budget}</strong> crediti.
-                </p>
                 <button
                   type="button"
                   disabled={resetInCorso}
@@ -1233,9 +1435,10 @@ export default function DashboardLega() {
                   />
                   <button
                     type="submit"
+                    disabled={invioEmailInCorso}
                     className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-4 py-2.5 rounded-xl text-xs uppercase transition shrink-0"
                   >
-                    Apri Mail
+                    {invioEmailInCorso ? "Invio..." : "Invia Email"}
                   </button>
                 </div>
                 <button
@@ -1243,7 +1446,7 @@ export default function DashboardLega() {
                   onClick={copiaMessaggioInvitoCompleto}
                   className="w-full bg-slate-900 hover:bg-slate-950 border border-slate-700 text-slate-300 font-bold py-2 rounded-lg text-[11px] transition"
                 >
-                  {messaggioCopiato ? "✓ Testo invito copiato!" : "Oppure copia testo invito da incollare su Gmail"}
+                  {messaggioCopiato ? "✓ Testo invito copiato!" : "Oppure copia testo invito negli appunti"}
                 </button>
               </form>
 
