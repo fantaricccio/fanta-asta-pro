@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { ref, onValue, update } from "firebase/database";
 import {
   signInWithPopup,
@@ -11,11 +11,11 @@ import {
   User,
 } from "firebase/auth";
 import { db, auth, googleProvider } from "../../../lib/firebase";
+import { sanitizeImageUrl, sanitizeText } from "../../../lib/security";
 
 export default function PaginaInvitoLega() {
-  const params = useParams();
   const router = useRouter();
-  const legaId = typeof params?.id === "string" ? params.id : Array.isArray(params?.id) ? params.id[0] : "";
+  const [legaId, setLegaId] = useState<string>("");
 
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -34,6 +34,19 @@ export default function PaginaInvitoLega() {
   const [logoUrl, setLogoUrl] = useState("");
   const [salvando, setSalvando] = useState(false);
 
+  // Estrae l'ID della lega direttamente dall'URL (/invito/ID_LEGA) lato client
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const parts = window.location.pathname.split("/").filter(Boolean);
+      const idEstratto = parts[parts.length - 1] || "";
+      if (idEstratto && idEstratto !== "invito") {
+        setLegaId(decodeURIComponent(idEstratto));
+      } else {
+        setLoadingLega(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
@@ -43,25 +56,28 @@ export default function PaginaInvitoLega() {
   }, []);
 
   useEffect(() => {
-    if (!legaId) {
-      setLoadingLega(false);
-      return;
-    }
+    if (!legaId) return;
 
     const legaRef = ref(db, `leghe/${legaId}`);
-    const unsub = onValue(legaRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        setLega(data);
-        if (data.squadre) {
-          const arr = Object.values(data.squadre).sort((a: any, b: any) => a.id - b.id);
-          setSquadre(arr);
+    const unsub = onValue(
+      legaRef,
+      (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          setLega(data);
+          if (data.squadre) {
+            const arr = Object.values(data.squadre).sort((a: any, b: any) => a.id - b.id);
+            setSquadre(arr);
+          }
+        } else {
+          setLega(null);
         }
-      } else {
-        setLega(null);
+        setLoadingLega(false);
+      },
+      () => {
+        setLoadingLega(false);
       }
-      setLoadingLega(false);
-    });
+    );
 
     return () => unsub();
   }, [legaId]);
@@ -69,7 +85,7 @@ export default function PaginaInvitoLega() {
   const tornaIndietro = () => {
     if (legaId) {
       localStorage.setItem("legaAttualeId", legaId);
-      router.push("/dashboard");
+      window.location.href = `/dashboard?lega=${encodeURIComponent(legaId)}`;
     } else {
       router.push("/");
     }
@@ -113,25 +129,31 @@ export default function PaginaInvitoLega() {
 
   const entraSubitoInDashboard = () => {
     localStorage.setItem("legaAttualeId", legaId);
-    router.push("/dashboard");
+    window.location.href = `/dashboard?lega=${encodeURIComponent(legaId)}`;
   };
 
   const handleConfermaIscrizione = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user?.email || !legaId || slotSelezionatoId === "") return;
 
+    const cleanLogo = sanitizeImageUrl(logoUrl);
+    if (logoUrl.trim() !== "" && !cleanLogo) {
+      alert("⚠️ Link logo non valido: deve iniziare con https://");
+      return;
+    }
+
     setSalvando(true);
     try {
       const teamRef = ref(db, `leghe/${legaId}/squadre/squadra_${slotSelezionatoId}`);
       await update(teamRef, {
-        nome: nomeSquadra.trim(),
-        allenatore: allenatore.trim(),
+        nome: sanitizeText(nomeSquadra, 40) || `Squadra ${Number(slotSelezionatoId) + 1}`,
+        allenatore: sanitizeText(allenatore, 50),
         emailProprietario: user.email.trim().toLowerCase(),
-        logo: logoUrl.trim(),
+        logo: cleanLogo,
       });
 
       localStorage.setItem("legaAttualeId", legaId);
-      router.push("/dashboard");
+      window.location.href = `/dashboard?lega=${encodeURIComponent(legaId)}`;
     } catch {
       alert("Errore durante il salvataggio della squadra.");
     } finally {
@@ -142,26 +164,8 @@ export default function PaginaInvitoLega() {
   if (authLoading || loadingLega) {
     return (
       <div className="min-h-screen bg-slate-950 text-amber-400 flex flex-col items-center justify-center font-sans">
-        <i className="fa-solid fa-circle-notch fa-spin text-4xl mb-4"></i>
         <h2 className="font-bold tracking-widest uppercase">Verifica Invito Lega...</h2>
       </div>
-    );
-  }
-
-  if (!lega) {
-    return (
-      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 font-sans text-center">
-        <div className="bg-slate-900 border border-red-800/60 p-8 rounded-2xl max-w-md space-y-4 shadow-2xl">
-          <i className="fa-solid fa-link-slash text-4xl text-red-500"></i>
-          <h1 className="text-xl font-black uppercase text-white">Link Non Valido</h1>
-          <button
-            onClick={() => router.push("/")}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl"
-          >
-            Torna alla Home
-          </button>
-        </div>
-      </main>
     );
   }
 
@@ -172,14 +176,14 @@ export default function PaginaInvitoLega() {
           <div className="bg-gradient-to-r from-emerald-600 to-teal-700 p-6 text-center relative">
             <button
               onClick={() => router.push("/")}
-              className="absolute left-4 top-4 bg-black/25 hover:bg-black/40 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5"
+              className="absolute left-4 top-4 bg-black/25 hover:bg-black/40 text-white px-3 py-1.5 rounded-lg text-xs font-bold"
             >
-              <i className="fa-solid fa-arrow-left"></i> Indietro
+              ← Indietro
             </button>
             <div className="text-xs font-black uppercase tracking-widest text-emerald-100 mb-1 mt-4">
-              Invito nella lega
+              Invito nella Lega
             </div>
-            <h1 className="text-2xl md:text-3xl font-black text-white">{lega.nomeLega}</h1>
+            <h1 className="text-2xl font-black text-white">{lega?.nomeLega || "FantaAsta Pro"}</h1>
           </div>
 
           <div className="p-6 space-y-5">
@@ -188,7 +192,6 @@ export default function PaginaInvitoLega() {
               onClick={handleGoogleLogin}
               className="w-full bg-white hover:bg-slate-100 text-slate-900 font-bold py-3.5 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-3"
             >
-              <i className="fa-brands fa-google text-red-500 text-lg"></i>
               Continua con Google
             </button>
 
@@ -237,15 +240,31 @@ export default function PaginaInvitoLega() {
     );
   }
 
+  if (!lega) {
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 font-sans text-center">
+        <div className="bg-slate-900 border border-red-800/60 p-8 rounded-2xl max-w-md space-y-4 shadow-2xl">
+          <h1 className="text-xl font-black uppercase text-white">Link Non Valido</h1>
+          <button
+            onClick={() => router.push("/")}
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl"
+          >
+            Torna alla Home
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 font-sans">
       <div className="max-w-lg w-full bg-slate-900 rounded-2xl shadow-2xl border border-slate-800 overflow-hidden">
         <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-6 text-center relative">
           <button
             onClick={tornaIndietro}
-            className="absolute left-4 top-4 bg-black/25 hover:bg-black/40 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition"
+            className="absolute left-4 top-4 bg-black/25 hover:bg-black/40 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition"
           >
-            <i className="fa-solid fa-arrow-left"></i> Indietro
+            ← Indietro
           </button>
           <div className="text-xs font-black uppercase tracking-widest text-blue-200 mb-1 mt-4">
             Benvenuto nella Lega
@@ -265,7 +284,7 @@ export default function PaginaInvitoLega() {
                 onClick={entraSubitoInDashboard}
                 className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black uppercase py-4 rounded-xl shadow-lg"
               >
-                Vai al Tabellone <i className="fa-solid fa-arrow-right ml-2"></i>
+                Vai al Tabellone →
               </button>
             </div>
           ) : slotLiberi.length === 0 ? (
