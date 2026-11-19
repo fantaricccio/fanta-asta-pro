@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { usePathname } from "next/navigation";
 import { ref, onValue } from "firebase/database";
 import { onAuthStateChanged, signInWithPopup, signOut, User } from "firebase/auth";
 import { db, auth, googleProvider } from "../lib/firebase";
@@ -9,12 +8,16 @@ import { db, auth, googleProvider } from "../lib/firebase";
 const SUPER_ADMIN_EMAIL = "fantaricccio@gmail.com";
 
 export default function MaintenanceGate({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const [isBackofficeRoute, setIsBackofficeRoute] = useState(false);
   const [sitoOffline, setSitoOffline] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsBackofficeRoute(window.location.pathname.startsWith("/backoffice"));
+    }
+
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       setUser(u);
     });
@@ -37,9 +40,8 @@ export default function MaintenanceGate({ children }: { children: React.ReactNod
     };
   }, []);
 
-  // Il Super Admin e la rotta /backoffice hanno sempre accesso
   const isSuperAdmin = user?.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
-  if (pathname?.startsWith("/backoffice") || isSuperAdmin || loading || !sitoOffline) {
+  if (isBackofficeRoute || isSuperAdmin || loading || !sitoOffline) {
     return <>{children}</>;
   }
 
