@@ -180,6 +180,16 @@ export default function DashboardLega() {
     return () => unsubPres();
   }, [legaId, miaSquadra]);
 
+  // Registra primo accesso del partecipante nella dashboard
+  useEffect(() => {
+    if (legaId && miaSquadra && !miaSquadra.ultimoAccesso) {
+      update(ref(db, `leghe/${legaId}/squadre/squadra_${miaSquadra.id}`), {
+        ultimoAccesso: new Date().toISOString(),
+        statoInvito: "attivo",
+      });
+    }
+  }, [legaId, miaSquadra]);
+
   const scriviLog = async (azione: string, dettaglio: string, faseOverride?: string) => {
     if (!legaId) return;
     const logsAttuali = lega?.auditLogs || [];
@@ -338,7 +348,6 @@ export default function DashboardLega() {
       logo: cleanLogo,
     };
 
-    // Solo l'Admin può cambiare l'email proprietario dello slot
     if (isAdminLega) {
       payload.emailProprietario = editEmailProprietario.trim().toLowerCase();
     }
@@ -837,7 +846,7 @@ export default function DashboardLega() {
           </div>
         ) : null}
 
-        {/* TABELLONE ROSE: SEMPRE AFFIANCATO IN ORIZZONTALE ANCHE SU CELLULARE */}
+        {/* TABELLONE ROSE: AFFIANCATO IN ORIZZONTALE SU PC E CELLULARE */}
         <div
           className={`flex flex-row flex-nowrap gap-2.5 overflow-x-auto pb-3 ${
             squadreVisibili.length === 1 ? "justify-center" : ""
@@ -869,7 +878,15 @@ export default function DashboardLega() {
                     <div className="flex items-center gap-2 min-w-0">
                       <div
                         className="relative shrink-0"
-                        title={isOnline ? "Partecipante Online" : "Partecipante Offline"}
+                        title={
+                          isOnline
+                            ? "Online ora"
+                            : !squadra.emailProprietario
+                            ? "Slot libero"
+                            : squadra.ultimoAccesso || squadra.statoInvito === "attivo"
+                            ? "Registrato"
+                            : "Invitato"
+                        }
                       >
                         {safeLogoUrl && !brokenLogos[squadra.id] ? (
                           <img
@@ -887,7 +904,11 @@ export default function DashboardLega() {
                           className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-800 ${
                             isOnline
                               ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)] animate-pulse"
-                              : "bg-red-500"
+                              : !squadra.emailProprietario
+                              ? "bg-slate-500"
+                              : squadra.ultimoAccesso || squadra.statoInvito === "attivo"
+                              ? "bg-sky-400"
+                              : "bg-amber-400"
                           }`}
                         ></span>
                       </div>
@@ -897,9 +918,15 @@ export default function DashboardLega() {
                           {squadra.nome}
                         </h2>
                         <p className="text-[10px] text-slate-400 truncate">
-                          <span className={isOnline ? "text-emerald-400 font-bold" : "text-red-400/80"}>
-                            {isOnline ? "Online" : "Offline"}
-                          </span>
+                          {isOnline ? (
+                            <span className="text-emerald-400 font-bold">● Online</span>
+                          ) : !squadra.emailProprietario ? (
+                            <span className="text-slate-500">Slot Libero</span>
+                          ) : squadra.ultimoAccesso || squadra.statoInvito === "attivo" ? (
+                            <span className="text-sky-400 font-semibold">✓ Registrato</span>
+                          ) : (
+                            <span className="text-amber-400 font-semibold">✉ Invitato</span>
+                          )}
                           {squadra.allenatore ? ` • ${squadra.allenatore}` : ""}
                         </p>
                       </div>
@@ -1041,7 +1068,7 @@ export default function DashboardLega() {
         </div>
       </div>
 
-      {/* MODAL 1: CONFIGURAZIONE SQUADRA (Admin vede email proprietario; Partecipante modifica solo nome/allenatore/logo della propria) */}
+      {/* MODAL 1: CONFIGURAZIONE SQUADRA */}
       {editingTeam && (
         <div
           onClick={() => setEditingTeam(null)}

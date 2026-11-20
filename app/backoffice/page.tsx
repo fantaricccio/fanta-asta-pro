@@ -26,19 +26,14 @@ export default function SuperAdminBackoffice() {
   const [authMessaggio, setAuthMessaggio] = useState("");
   const [isResetting, setIsResetting] = useState(false);
 
-  // Stato Sito Offline / Manutenzione
   const [sitoOffline, setSitoOffline] = useState(false);
-
-  // Navigazione Tab
   const [activeTab, setActiveTab] = useState<"leghe" | "licenze" | "listoni" | "ticket" | "logs">("leghe");
 
-  // Listoni
   const [loadingClassic, setLoadingClassic] = useState(false);
   const [msgClassic, setMsgClassic] = useState("");
   const [loadingMantra, setLoadingMantra] = useState(false);
   const [msgMantra, setMsgMantra] = useState("");
 
-  // Leghe, Utenti, Licenze, Ticket & Log
   const [leghe, setLeghe] = useState<any[]>([]);
   const [licenze, setLicenze] = useState<Record<string, any>>({});
   const [tickets, setTickets] = useState<any[]>([]);
@@ -53,6 +48,7 @@ export default function SuperAdminBackoffice() {
   // Campi editabili nella modal Utenti / Admin della lega
   const [nuovoAdminEmail, setNuovoAdminEmail] = useState("");
   const [slotEmailsDraft, setSlotEmailsDraft] = useState<Record<number, string>>({});
+  const [tempPasswordBox, setTempPasswordBox] = useState<{ email: string; tempPassword: string; emailInviata: boolean } | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -211,9 +207,10 @@ export default function SuperAdminBackoffice() {
     }
   };
 
-  // --- GESTIONE AVANZATA ADMIN, PARTECIPANTI E INVITI DI UNA LEGA ---
+  // --- GESTIONE AVANZATA ADMIN, PARTECIPANTI, INVITI E RESET PASSWORD TEMPORANEA ---
   const apriModalUtentiLega = (lega: any) => {
     setSelectedLegaForUsers(lega);
+    setTempPasswordBox(null);
     setNuovoAdminEmail(lega.adminEmail || "");
     const drafts: Record<number, string> = {};
     if (lega.squadre) {
@@ -232,7 +229,7 @@ export default function SuperAdminBackoffice() {
 
     await update(ref(db, `leghe/${selectedLegaForUsers.id}`), {
       adminEmail: mailClean,
-      adminUid: "", // Verrà associato automaticamente al primo accesso del nuovo admin
+      adminUid: "",
     });
     alert(`✅ Admin della lega aggiornato a: ${mailClean}`);
   };
@@ -241,6 +238,8 @@ export default function SuperAdminBackoffice() {
     const mailClean = (slotEmailsDraft[squadra.id] ?? squadra.emailProprietario ?? "").trim().toLowerCase();
     await update(ref(db, `leghe/${lega.id}/squadre/squadra_${squadra.id}`), {
       emailProprietario: mailClean,
+      statoInvito: mailClean ? (squadra.ultimoAccesso ? "attivo" : "invitato") : "",
+      invitatoIl: mailClean ? new Date().toISOString() : null,
     });
 
     if (inviaMail && mailClean) {
@@ -261,7 +260,7 @@ export default function SuperAdminBackoffice() {
           alert(`✅ Email di invito inviata con successo a ${mailClean}!`);
         } else {
           const subject = `Invito Lega Fantacalcio: ${lega.nomeLega}`;
-          const body = `Ciao!\n\nSei stato inserito/invitato nella lega "${lega.nomeLega}" su FantaAsta Pro.\nAccedi da questo link:\n${linkInvito}`;
+          const body = `Ciao!\n\nSei stato invitato nella lega "${lega.nomeLega}" su FantaAsta Pro.\nAccedi da questo link:\n${linkInvito}`;
           window.open(
             `mailto:${encodeURIComponent(mailClean)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
             "_blank"
@@ -272,6 +271,40 @@ export default function SuperAdminBackoffice() {
       }
     } else {
       alert("✅ Email partecipante salvata nello slot!");
+    }
+  };
+
+  const generaPasswordTemporaneaUtente = async (lega: any, emailUtente: string) => {
+    const mailClean = emailUtente.trim().toLowerCase();
+    if (!mailClean) return;
+
+    try {
+      // 1. Invia anche email ufficiale di reset Firebase (per aggiornare la password su Firebase Auth)
+      await sendPasswordResetEmail(auth, mailClean).catch(() => {});
+
+      // 2. Genera password temporanea e imposta obbligo cambio al primo accesso
+      const res = await fetch("/api/admin-reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailUtente: mailClean, nomeLega: lega.nomeLega }),
+      });
+      const data = await res.json();
+
+      if (data.ok && data.tempPassword) {
+        await set(ref(db, `impostazioni_globali/force_password_change/${emailToKey(mailClean)}`), {
+          email: mailClean,
+          tempPassword: data.tempPassword,
+          createdAt: new Date().toISOString(),
+        });
+
+        setTempPasswordBox({
+          email: mailClean,
+          tempPassword: data.tempPassword,
+          emailInviata: Boolean(data.emailInviata),
+        });
+      }
+    } catch {
+      alert("Errore durante il reset password.");
     }
   };
 
@@ -305,6 +338,8 @@ export default function SuperAdminBackoffice() {
     setSlotEmailsDraft((prev) => ({ ...prev, [squadraId]: "" }));
     await update(ref(db, `leghe/${legaId}/squadre/squadra_${squadraId}`), {
       emailProprietario: "",
+      statoInvito: "",
+      ultimoAccesso: null,
     });
   };
 
@@ -494,7 +529,6 @@ export default function SuperAdminBackoffice() {
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-4 md:p-8 font-sans">
       <div className="max-w-6xl mx-auto space-y-6">
         
-        {/* HEADER CON INTERRUTTORE SITO ONLINE / OFFLINE */}
         <header className="border-b border-red-900/50 pb-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <h1 className="text-2xl md:text-3xl font-black text-red-500 uppercase tracking-widest">
@@ -533,7 +567,6 @@ export default function SuperAdminBackoffice() {
           </div>
         </header>
 
-        {/* BARRA NAVIGAZIONE A SCHEDE */}
         <nav className="flex flex-wrap gap-2 bg-neutral-900 p-1.5 rounded-xl border border-neutral-800">
           <button
             onClick={() => setActiveTab("leghe")}
@@ -621,7 +654,7 @@ export default function SuperAdminBackoffice() {
                               onClick={() => apriModalUtentiLega(lega)}
                               className="bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-600/40 px-3 py-2 rounded text-xs font-bold transition"
                             >
-                              Utenti / Inviti / Admin
+                              Utenti / Inviti / Reset Pwd
                             </button>
                             <button
                               onClick={() => entraNellaLega(lega.id)}
@@ -646,13 +679,13 @@ export default function SuperAdminBackoffice() {
           </section>
         )}
 
-        {/* TAB 2: GESTIONE LICENZE ADMIN */}
+        {/* TAB 2: GESTIONE LICENZE */}
         {activeTab === "licenze" && (
           <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl space-y-6">
             <div>
               <h2 className="text-lg font-bold text-white">Gestione Licenze Acquistate</h2>
               <p className="text-xs text-neutral-400">
-                Solo gli utenti con una licenza attiva possono creare nuove leghe (fino al numero massimo acquistato). Tutti gli altri accedono solo come partecipanti invitati.
+                Solo gli utenti con una licenza attiva possono creare nuove leghe (fino al numero massimo acquistato).
               </p>
             </div>
 
@@ -711,58 +744,47 @@ export default function SuperAdminBackoffice() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-800">
-                  {listaLicenze.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="p-6 text-center text-neutral-600 italic">
-                        Nessuna licenza inserita (tu come Super Admin hai sempre accesso illimitato).
+                  {listaLicenze.map(([chiave, lic]: [string, any]) => (
+                    <tr key={chiave}>
+                      <td className="p-3 font-bold text-white">{lic.email}</td>
+                      <td className="p-3 text-center font-black text-amber-400 text-sm">{lic.maxLeghe}</td>
+                      <td className="p-3 text-neutral-400">{lic.note}</td>
+                      <td className="p-3 text-center">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                            lic.attiva ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
+                          }`}
+                        >
+                          {lic.attiva ? "Attiva" : "Sospesa"}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right space-x-2">
+                        <button
+                          onClick={() => toggleStatoLicenza(chiave, lic.attiva)}
+                          className="bg-neutral-800 hover:bg-neutral-700 px-2.5 py-1 rounded text-xs font-bold"
+                        >
+                          {lic.attiva ? "Sospendi" : "Riattiva"}
+                        </button>
+                        <button
+                          onClick={() => eliminaLicenza(chiave)}
+                          className="bg-red-950 hover:bg-red-600 text-red-300 hover:text-white px-2.5 py-1 rounded text-xs font-bold"
+                        >
+                          Elimina
+                        </button>
                       </td>
                     </tr>
-                  ) : (
-                    listaLicenze.map(([chiave, lic]: [string, any]) => (
-                      <tr key={chiave}>
-                        <td className="p-3 font-bold text-white">{lic.email}</td>
-                        <td className="p-3 text-center font-black text-amber-400 text-sm">{lic.maxLeghe}</td>
-                        <td className="p-3 text-neutral-400">{lic.note}</td>
-                        <td className="p-3 text-center">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                              lic.attiva ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
-                            }`}
-                          >
-                            {lic.attiva ? "Attiva" : "Sospesa"}
-                          </span>
-                        </td>
-                        <td className="p-3 text-right space-x-2">
-                          <button
-                            onClick={() => toggleStatoLicenza(chiave, lic.attiva)}
-                            className="bg-neutral-800 hover:bg-neutral-700 px-2.5 py-1 rounded text-xs font-bold"
-                          >
-                            {lic.attiva ? "Sospendi" : "Riattiva"}
-                          </button>
-                          <button
-                            onClick={() => eliminaLicenza(chiave)}
-                            className="bg-red-950 hover:bg-red-600 text-red-300 hover:text-white px-2.5 py-1 rounded text-xs font-bold"
-                          >
-                            Elimina
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
+                  ))}
                 </tbody>
               </table>
             </div>
           </section>
         )}
 
-        {/* TAB 3: CARICAMENTO LISTONI */}
+        {/* TAB 3: LISTONI */}
         {activeTab === "listoni" && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl space-y-4">
               <h2 className="text-xl font-bold text-white">Listone Modalità CLASSIC</h2>
-              <p className="text-xs text-neutral-400">
-                Carica il file Excel (.xlsx) del listone Classic. Mantiene l'asterisco <strong>*</strong> sui calciatori ceduti all'estero o in serie minori.
-              </p>
               <div className="border-2 border-dashed border-neutral-700 rounded-xl p-6 text-center bg-neutral-950/50">
                 <input
                   type="file"
@@ -772,7 +794,7 @@ export default function SuperAdminBackoffice() {
                     const f = e.target.files?.[0];
                     if (f) importaExcelListone(f, "classic");
                   }}
-                  className="w-full text-sm text-neutral-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-emerald-600 file:text-white hover:file:bg-emerald-500 cursor-pointer"
+                  className="w-full text-sm text-neutral-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-emerald-600 file:text-white cursor-pointer"
                 />
               </div>
               {msgClassic && (
@@ -784,9 +806,6 @@ export default function SuperAdminBackoffice() {
 
             <section className="bg-neutral-900 rounded-xl border border-neutral-800 p-6 shadow-2xl space-y-4">
               <h2 className="text-xl font-bold text-white">Listone Modalità MANTRA</h2>
-              <p className="text-xs text-neutral-400">
-                Carica il file Excel (.xlsx) del listone Mantra (con colonna <code>R.MANTRA</code>).
-              </p>
               <div className="border-2 border-dashed border-neutral-700 rounded-xl p-6 text-center bg-neutral-950/50">
                 <input
                   type="file"
@@ -796,7 +815,7 @@ export default function SuperAdminBackoffice() {
                     const f = e.target.files?.[0];
                     if (f) importaExcelListone(f, "mantra");
                   }}
-                  className="w-full text-sm text-neutral-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-blue-600 file:text-white hover:file:bg-blue-500 cursor-pointer"
+                  className="w-full text-sm text-neutral-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-blue-600 file:text-white cursor-pointer"
                 />
               </div>
               {msgMantra && (
@@ -919,7 +938,7 @@ export default function SuperAdminBackoffice() {
         )}
       </div>
 
-      {/* MODAL GESTIONE UTENTI, SOSTITUZIONE ADMIN E INVITO PARTECIPANTI */}
+      {/* MODAL GESTIONE UTENTI, FASI DI ACCESSO E RESET PASSWORD TEMPORANEA */}
       {selectedLegaForUsers && (
         <div
           onClick={() => setSelectedLegaForUsers(null)}
@@ -927,14 +946,12 @@ export default function SuperAdminBackoffice() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-neutral-900 rounded-2xl shadow-2xl border border-neutral-700 w-full max-w-3xl overflow-hidden max-h-[88vh] flex flex-col"
+            className="bg-neutral-900 rounded-2xl shadow-2xl border border-neutral-700 w-full max-w-3xl overflow-hidden max-h-[90vh] flex flex-col"
           >
             <div className="bg-neutral-800 p-4 flex justify-between items-center border-b border-neutral-700">
-              <div>
-                <h3 className="text-lg font-black text-white">
-                  Gestione Utenti & Admin • <span className="text-amber-400">{selectedLegaForUsers.nomeLega}</span>
-                </h3>
-              </div>
+              <h3 className="text-lg font-black text-white">
+                Gestione Utenti & Accessi • <span className="text-amber-400">{selectedLegaForUsers.nomeLega}</span>
+              </h3>
               <button
                 type="button"
                 onClick={() => setSelectedLegaForUsers(null)}
@@ -945,7 +962,22 @@ export default function SuperAdminBackoffice() {
             </div>
 
             <div className="p-4 overflow-y-auto space-y-5 flex-1">
-              {/* Sostituzione Admin Principale */}
+              {tempPasswordBox && (
+                <div className="bg-amber-950/60 border border-amber-500 rounded-xl p-4 space-y-2 text-xs">
+                  <div className="font-black text-amber-300 uppercase">
+                    🔐 Password Temporanea Generata per {tempPasswordBox.email}
+                  </div>
+                  <p className="text-neutral-200">
+                    Password temporanea: <strong className="font-mono text-base text-white bg-black/40 px-2 py-0.5 rounded">{tempPasswordBox.tempPassword}</strong>
+                  </p>
+                  <p className="text-neutral-300">
+                    {tempPasswordBox.emailInviata
+                      ? "✅ Email inviata automaticamente al partecipante con obbligo di cambio al primo accesso."
+                      : "⚠️ Copia questa password temporanea e inviala al partecipante (oppure usa il link di reset Firebase già spedito alla sua casella). Al primo accesso sarà obbligato a cambiarla."}
+                  </p>
+                </div>
+              )}
+
               <form onSubmit={sostituisciAdminLega} className="bg-neutral-950 p-4 rounded-xl border border-neutral-800 space-y-2">
                 <label className="block text-[10px] font-black uppercase text-amber-400">
                   Admin Fondatore della Lega (Sostituisci Email Admin)
@@ -967,7 +999,6 @@ export default function SuperAdminBackoffice() {
                 </div>
               </form>
 
-              {/* Elenco Slot Squadre con inserimento/sostituzione email e tasto Invita */}
               <div className="divide-y divide-neutral-800">
                 {(selectedLegaForUsers.squadre ? Object.values(selectedLegaForUsers.squadre) : []).map((sq: any) => {
                   const mailSalvata = (sq.emailProprietario || "").trim().toLowerCase();
@@ -976,16 +1007,32 @@ export default function SuperAdminBackoffice() {
                     ? selectedLegaForUsers.coAdmins.map((m: string) => m.toLowerCase())
                     : [];
                   const isCoAdmin = mailSalvata && coAdmins.includes(mailSalvata);
+                  const isOnlineOra = Boolean(selectedLegaForUsers.presenzeAsta?.[`squadra_${sq.id}`]);
+
+                  // Fase di accesso partecipante
+                  const faseBadge = !mailSalvata
+                    ? { label: "Slot Libero", cls: "bg-neutral-800 text-neutral-400" }
+                    : isOnlineOra
+                    ? { label: "● Online Ora", cls: "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" }
+                    : sq.ultimoAccesso || sq.statoInvito === "attivo"
+                    ? { label: "✓ Registrato", cls: "bg-sky-500/20 text-sky-300 border border-sky-500/40" }
+                    : { label: "✉ Invitato (In attesa)", cls: "bg-amber-500/20 text-amber-300 border border-amber-500/40" };
 
                   return (
-                    <div key={sq.id} className="py-3 space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="font-bold text-white text-sm">
-                          Slot #{sq.id + 1}: {sq.nome}
-                        </span>
+                    <div key={sq.id} className="py-3.5 space-y-2">
+                      <div className="flex flex-wrap justify-between items-center gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white text-sm">
+                            Slot #{sq.id + 1}: {sq.nome}
+                          </span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-black uppercase ${faseBadge.cls}`}>
+                            {faseBadge.label}
+                          </span>
+                        </div>
+
                         {mailSalvata && (
                           <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-bold uppercase">
-                            {isCoAdmin ? "Admin + Giocatore" : "Giocatore"}
+                            {isCoAdmin ? "Admin + Giocatore" : "Solo Giocatore"}
                           </span>
                         )}
                       </div>
@@ -1017,8 +1064,16 @@ export default function SuperAdminBackoffice() {
                             <>
                               <button
                                 type="button"
+                                onClick={() => generaPasswordTemporaneaUtente(selectedLegaForUsers, mailSalvata)}
+                                className="bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/40 px-2.5 py-2 rounded-lg text-xs font-bold"
+                                title="Invia password temporanea con obbligo cambio"
+                              >
+                                Reset Pwd
+                              </button>
+                              <button
+                                type="button"
                                 onClick={() => toggleCoAdminSquadra(selectedLegaForUsers, sq)}
-                                className="bg-neutral-800 hover:bg-neutral-700 text-amber-300 px-2.5 py-2 rounded-lg text-xs font-bold"
+                                className="bg-neutral-800 hover:bg-neutral-700 text-neutral-300 px-2.5 py-2 rounded-lg text-xs font-bold"
                               >
                                 {isCoAdmin ? "Togli Admin" : "+ Admin"}
                               </button>

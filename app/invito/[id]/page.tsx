@@ -7,6 +7,7 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
   onAuthStateChanged,
   User,
 } from "firebase/auth";
@@ -34,7 +35,6 @@ export default function PaginaInvitoLega() {
   const [logoUrl, setLogoUrl] = useState("");
   const [salvando, setSalvando] = useState(false);
 
-  // Estrae l'ID della lega direttamente dall'URL (/invito/ID_LEGA) lato client
   useEffect(() => {
     if (typeof window !== "undefined") {
       const parts = window.location.pathname.split("/").filter(Boolean);
@@ -112,9 +112,24 @@ export default function PaginaInvitoLega() {
     } catch (error: any) {
       if (error.code === "auth/email-already-in-use") {
         setAuthMessaggio("⚠️ Email già registrata. Passa ad Accedi.");
+      } else if (error.code === "auth/weak-password") {
+        setAuthMessaggio("⚠️ La password deve avere almeno 6 caratteri.");
       } else {
         setAuthMessaggio("❌ Credenziali non valide.");
       }
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!email) {
+      setAuthMessaggio("⚠️ Inserisci prima la tua email nel campo sopra.");
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setAuthMessaggio("✅ Email per reimpostare la password inviata!");
+    } catch {
+      setAuthMessaggio("❌ Impossibile inviare l'email di reset.");
     }
   };
 
@@ -124,6 +139,16 @@ export default function PaginaInvitoLega() {
       sq.emailProprietario &&
       sq.emailProprietario.toLowerCase().trim() === user.email.toLowerCase().trim()
   );
+
+  // Se l'utente aveva già l'email pre-inserita dall'Admin, registra il primo accesso effettuato
+  useEffect(() => {
+    if (legaId && user?.email && squadraGiaAssegnata && !squadraGiaAssegnata.ultimoAccesso) {
+      update(ref(db, `leghe/${legaId}/squadre/squadra_${squadraGiaAssegnata.id}`), {
+        ultimoAccesso: new Date().toISOString(),
+        statoInvito: "attivo",
+      });
+    }
+  }, [legaId, user, squadraGiaAssegnata]);
 
   const slotLiberi = squadre.filter((sq) => !sq.emailProprietario || sq.emailProprietario.trim() === "");
 
@@ -150,6 +175,8 @@ export default function PaginaInvitoLega() {
         allenatore: sanitizeText(allenatore, 50),
         emailProprietario: user.email.trim().toLowerCase(),
         logo: cleanLogo,
+        ultimoAccesso: new Date().toISOString(),
+        statoInvito: "attivo",
       });
 
       localStorage.setItem("legaAttualeId", legaId);
@@ -225,14 +252,27 @@ export default function PaginaInvitoLega() {
               </button>
             </form>
 
-            <div className="text-center">
+            <div className="flex flex-col items-center gap-2 text-center">
               <button
                 type="button"
-                onClick={() => setIsRegistering(!isRegistering)}
+                onClick={() => {
+                  setIsRegistering(!isRegistering);
+                  setAuthMessaggio("");
+                }}
                 className="text-xs text-slate-400 hover:text-amber-400 font-semibold"
               >
                 {isRegistering ? "Hai già un account? Accedi" : "Non hai un account? Registrati"}
               </button>
+
+              {!isRegistering && (
+                <button
+                  type="button"
+                  onClick={handleResetPassword}
+                  className="text-xs text-slate-500 hover:text-slate-300 underline"
+                >
+                  Password dimenticata? Invia link di reset
+                </button>
+              )}
             </div>
           </div>
         </div>

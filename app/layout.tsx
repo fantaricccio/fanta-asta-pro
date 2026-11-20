@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import SessionTimeoutGuard from "../components/SessionTimeoutGuard";
 import MaintenanceGate from "../components/MaintenanceGate";
+import PasswordChangeGuard from "../components/PasswordChangeGuard";
 
 export const metadata: Metadata = {
   title: "FantaAsta Pro - Gestione Asta & Leghe Fantacalcio",
@@ -17,7 +18,9 @@ export default function RootLayout({
     <html lang="it">
       <body className="bg-slate-950 text-slate-100 antialiased">
         <SessionTimeoutGuard>
-          <MaintenanceGate>{children}</MaintenanceGate>
+          <MaintenanceGate>
+            <PasswordChangeGuard>{children}</PasswordChangeGuard>
+          </MaintenanceGate>
         </SessionTimeoutGuard>
       </body>
     </html>
