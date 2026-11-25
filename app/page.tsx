@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { ref, push, set, onValue } from "firebase/database";
 import {
   signInWithPopup,
@@ -24,6 +25,7 @@ export default function HomePortale() {
   const [isRegistering, setIsRegistering] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [authMessaggio, setAuthMessaggio] = useState("");
 
   const [mieLeghe, setMieLeghe] = useState<any[]>([]);
@@ -126,10 +128,26 @@ export default function HomePortale() {
   const maxLegheConsentite = isSuperAdmin ? 999 : miaLicenza?.attiva ? Number(miaLicenza.maxLeghe || 1) : 0;
   const puoCreareNuovaLega = isSuperAdmin || (Boolean(miaLicenza?.attiva) && legheCreateDaMe < maxLegheConsentite);
 
+  const registraConsensoGdpr = async (uid: string, userEmail: string | null) => {
+    try {
+      await set(ref(db, `utenti_gdpr/${uid}`), {
+        email: (userEmail || "").toLowerCase(),
+        privacyAccepted: true,
+        privacyVersion: "1.0",
+        privacyAcceptedAt: new Date().toISOString(),
+      });
+    } catch {
+      // Non blocca l'accesso in caso di regole restrittive
+    }
+  };
+
   const handleGoogleLogin = async () => {
     setAuthMessaggio("");
     try {
-      await signInWithPopup(auth, googleProvider);
+      const res = await signInWithPopup(auth, googleProvider);
+      if (res.user) {
+        await registraConsensoGdpr(res.user.uid, res.user.email);
+      }
     } catch {
       setAuthMessaggio("❌ Accesso con Google non riuscito.");
     }
@@ -140,7 +158,14 @@ export default function HomePortale() {
     setAuthMessaggio("");
     try {
       if (isRegistering) {
-        await createUserWithEmailAndPassword(auth, email, password);
+        if (!privacyAccepted) {
+          setAuthMessaggio("⚠️ Devi accettare l'Informativa sulla Privacy e i Termini per creare l'account.");
+          return;
+        }
+        const res = await createUserWithEmailAndPassword(auth, email, password);
+        if (res.user) {
+          await registraConsensoGdpr(res.user.uid, res.user.email);
+        }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
@@ -263,10 +288,17 @@ export default function HomePortale() {
             <button
               type="button"
               onClick={handleGoogleLogin}
-              className="w-full bg-white hover:bg-slate-100 text-slate-900 font-bold py-3.5 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-3 mb-6 border border-slate-300"
+              className="w-full bg-white hover:bg-slate-100 text-slate-900 font-bold py-3.5 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-3 mb-2 border border-slate-300"
             >
               Continua con Google
             </button>
+            <p className="text-[11px] text-center text-slate-400 mb-5">
+              Proseguendo con Google accetti la nostra{" "}
+              <Link href="/privacy" className="text-amber-400 underline">
+                Informativa Privacy &amp; Cookie
+              </Link>
+              .
+            </p>
 
             <form onSubmit={handleEmailAuth} className="space-y-4">
               <div>
@@ -292,6 +324,25 @@ export default function HomePortale() {
                   className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
                 />
               </div>
+
+              {isRegistering && (
+                <label className="flex items-start gap-2.5 text-xs text-slate-300 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    required
+                    checked={privacyAccepted}
+                    onChange={(e) => setPrivacyAccepted(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-600"
+                  />
+                  <span>
+                    Ho letto e accetto l&apos;
+                    <Link href="/privacy" target="_blank" className="text-amber-400 underline font-bold">
+                      Informativa sulla Privacy e i Termini di Utilizzo
+                    </Link>{" "}
+                    (obbligatorio) *
+                  </span>
+                </label>
+              )}
 
               {authMessaggio && (
                 <div className="text-xs p-3 rounded border font-medium bg-red-900/30 text-red-300 border-red-700">
@@ -324,6 +375,10 @@ export default function HomePortale() {
                   Password dimenticata?
                 </button>
               )}
+
+              <Link href="/privacy" className="text-slate-500 hover:text-amber-400 underline pt-1">
+                Privacy &amp; Cookie Policy
+              </Link>
             </div>
           </div>
         </div>
@@ -600,6 +655,12 @@ export default function HomePortale() {
             </div>
           </div>
         )}
+
+        <footer className="text-center pt-4 pb-6 text-xs text-slate-500">
+          <Link href="/privacy" className="hover:text-amber-400 underline">
+            Privacy, Cookie &amp; Termini di Utilizzo
+          </Link>
+        </footer>
       </div>
     </main>
   );
