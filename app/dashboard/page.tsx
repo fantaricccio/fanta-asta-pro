@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ref, onValue, update, set, onDisconnect } from "firebase/database";
+import { ref, onValue, update, set, get, onDisconnect } from "firebase/database";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { db, auth } from "../../lib/firebase";
 import { sanitizeImageUrl, sanitizeText } from "../../lib/security";
 import ThemeToggle from "../../components/ThemeToggle";
 import SupportModal from "../../components/SupportModal";
+import ImportLegheFcModal from "../../components/ImportLegheFcModal";
+import { ImportedFantaTeam } from "../../lib/legheFcParser";
 
 const SUPER_ADMIN_EMAIL = "fantaricccio@gmail.com";
 
@@ -24,6 +26,9 @@ export default function DashboardLega() {
   const [onlineSquadreIds, setOnlineSquadreIds] = useState<number[]>([]);
   const [filtroSquadraId, setFiltroSquadraId] = useState<string>("TUTTE");
   const [brokenLogos, setBrokenLogos] = useState<Record<number, boolean>>({});
+
+  // Modal Importazione Rose da Leghe Fantacalcio
+  const [showImportLegheModal, setShowImportLegheModal] = useState(false);
 
   // Modal Modifica Squadra (Admin su tutte, Partecipante SOLO sulla propria)
   const [editingTeam, setEditingTeam] = useState<any>(null);
@@ -204,6 +209,89 @@ export default function DashboardLega() {
     await update(ref(db, `leghe/${legaId}`), {
       auditLogs: [nuovoLog, ...logsAttuali].slice(0, 300),
     });
+  };
+
+  // --- IMPORTAZIONE ROSE DA LEGHE FANTACALCIO (ASTA DI RIPARAZIONE) ---
+  const handleConfirmImportLegheFc = async (importedTeams: ImportedFantaTeam[]) => {
+    if (!legaId || !lega || !isAdminLega) return;
+
+    const conferma = confirm(
+      `Stai per importare ${importedTeams.length} squadre da Leghe Fantacalcio nella lega "${lega.nomeLega}".\n\nLe rose e i crediti residui verranno aggiornati per l'Asta di Riparazione. Procedere?`
+    );
+    if (!conferma) return;
+
+    // Legge il listone ufficiale su Firebase per associare gli ID reali dei calciatori
+    const pathListone = isMantra ? "impostazioni_globali/listone_mantra" : "impostazioni_globali/listone_classic";
+    const listoneSnap = await get(ref(db, pathListone));
+    const listoneVal = listoneSnap.val() || {};
+    const listoneArray: any[] = Object.values(listoneVal);
+
+    const slotTotali = isMantra
+      ? parseInt(lega.totaleRosaMantra || "26")
+      : parseInt(lega.portieri || "3") +
+        parseInt(lega.difensori || "8") +
+        parseInt(lega.centrocampisti || "8") +
+        parseInt(lega.attaccanti || "6");
+
+    const updates: Record<string, any> = {};
+    let totaleCalciatoriImportati = 0;
+
+    importedTeams.forEach((impTeam, idx) => {
+      // Cerca se esiste già una squadra con lo stesso nome, altrimenti usa lo slot corrispondente
+      const existingByName = squadre.find(
+        (s) => s.nome?.trim().toLowerCase() === impTeam.teamName.trim().toLowerCase()
+      );
+      const targetSquadra = existingByName || squadre[idx] || { id: idx + 1 };
+      const sqId = targetSquadra.id;
+
+      const rosaNuova: Record<string, any[]> = isMantra ? { POR: [], MOV: [] } : { P: [], D: [], C: [], A: [] };
+
+      impTeam.players.forEach((p, pIdx) => {
+        // Cerca il calciatore nel listone globale per nome esatto (case-insensitive)
+        const cleanImportName = p.name.replace("*", "").trim().toLowerCase();
+        const matchedGlobal = listoneArray.find(
+          (g) => String(g.nome || "").replace("*", "").trim().toLowerCase() === cleanImportName
+        );
+
+        const chiaveRep = isMantra ? (p.role === "P" ? "POR" : "MOV") : p.role;
+        const ruoloDisplay = isMantra
+          ? matchedGlobal?.ruoloMantra || matchedGlobal?.ruolo || (p.role === "P" ? "Por" : "C")
+          : p.role;
+
+        const calciatoreObj = {
+          id: matchedGlobal?.id ?? `imp_${sqId}_${pIdx}_${Date.now()}`,
+          nome: matchedGlobal?.nome || p.name,
+          ruolo: ruoloDisplay,
+          chiaveReparto: chiaveRep,
+          squadraSerieA: matchedGlobal?.squadra || p.teamSerieA || "",
+          prezzoPagato: p.pricePaid,
+          fase: "Import Leghe FC",
+          timestamp: new Date().toISOString(),
+        };
+
+        if (!rosaNuova[chiaveRep]) rosaNuova[chiaveRep] = [];
+        rosaNuova[chiaveRep].push(calciatoreObj);
+        totaleCalciatoriImportati++;
+      });
+
+      updates[`leghe/${legaId}/squadre/squadra_${sqId}/id`] = sqId;
+      updates[`leghe/${legaId}/squadre/squadra_${sqId}/nome`] = sanitizeText(impTeam.teamName, 40);
+      updates[`leghe/${legaId}/squadre/squadra_${sqId}/crediti`] = impTeam.remainingCredits;
+      updates[`leghe/${legaId}/squadre/squadra_${sqId}/giocatoriOccupati`] = impTeam.players.length;
+      updates[`leghe/${legaId}/squadre/squadra_${sqId}/slotTotali`] = slotTotali;
+      updates[`leghe/${legaId}/squadre/squadra_${sqId}/rosa`] = rosaNuova;
+    });
+
+    updates[`leghe/${legaId}/faseAttivaNome`] = "Asta di Riparazione";
+
+    await update(ref(db), updates);
+    await scriviLog(
+      "IMPORT ROSE LEGHE FC",
+      `Importate ${importedTeams.length} squadre e ${totaleCalciatoriImportati} calciatori da file Leghe Fantacalcio`,
+      "Asta di Riparazione"
+    );
+
+    alert(`✅ Importazione completata! Caricate ${importedTeams.length} squadre (${totaleCalciatoriImportati} calciatori).`);
   };
 
   // --- ALBO D'ORO STORICO ---
@@ -775,6 +863,13 @@ export default function DashboardLega() {
             {isAdminLega ? (
               <>
                 <button
+                  onClick={() => setShowImportLegheModal(true)}
+                  className="bg-indigo-600/25 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition"
+                >
+                  📥 Importa Rose Leghe FC
+                </button>
+
+                <button
                   onClick={() => setShowRiparazioneManager(true)}
                   className="bg-rose-950/60 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-700/60 px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition"
                 >
@@ -1067,6 +1162,14 @@ export default function DashboardLega() {
           })}
         </div>
       </div>
+
+      {/* MODALE IMPORTAZIONE ROSE DA LEGHE FANTACALCIO */}
+      <ImportLegheFcModal
+        isOpen={showImportLegheModal}
+        onClose={() => setShowImportLegheModal(false)}
+        defaultBudget={parseInt(lega?.budget || "500")}
+        onConfirmImport={handleConfirmImportLegheFc}
+      />
 
       {/* MODAL 1: CONFIGURAZIONE SQUADRA */}
       {editingTeam && (

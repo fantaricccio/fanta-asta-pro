@@ -3,6 +3,7 @@ import "./globals.css";
 import SessionTimeoutGuard from "../components/SessionTimeoutGuard";
 import MaintenanceGate from "../components/MaintenanceGate";
 import PasswordChangeGuard from "../components/PasswordChangeGuard";
+import AstaHelpCopilot from "../components/AstaHelpCopilot";
 
 export const metadata: Metadata = {
   title: "FantaAsta Pro - Gestione Asta & Leghe Fantacalcio",
@@ -22,6 +23,7 @@ export default function RootLayout({
             <PasswordChangeGuard>{children}</PasswordChangeGuard>
           </MaintenanceGate>
         </SessionTimeoutGuard>
+        <AstaHelpCopilot />
       </body>
     </html>
   );
