@@ -207,6 +207,61 @@ export default function SuperAdminBackoffice() {
     }
   };
 
+  const eseguiResetStagionaleGlobale = async () => {
+    if (leghe.length === 0) {
+      alert("Nessuna lega presente da resettare.");
+      return;
+    }
+    const primaConferma = confirm(
+      `⚠️ ATTENZIONE: Stai per eseguire la CHIUSURA STAGIONE su tutte le ${leghe.length} leghe!\n\n` +
+      `Cosa verrà ELIMINATO per alleggerire il database:\n` +
+      `• Tutte le rose acquistate dei giocatori\n` +
+      `• Storico aste, log operazioni, sessioni riparazione, watchlist e offerte online\n` +
+      `• Tutti i crediti verranno riportati al budget iniziale\n\n` +
+      `Cosa verrà CONSERVATO:\n` +
+      `• Nomi delle leghe, squadre, loghi, email dei partecipanti e ALBO D'ORO!\n\n` +
+      `Vuoi continuare?`
+    );
+    if (!primaConferma) return;
+
+    const digitato = prompt('Scrivi RESET STAGIONE per confermare definitivamente:');
+    if (digitato?.trim().toUpperCase() !== "RESET STAGIONE") {
+      alert("Operazione annullata.");
+      return;
+    }
+
+    for (const lega of leghe) {
+      const isMantra = lega.modalita === "mantra";
+      const budgetIniziale = parseInt(lega.budget) || 500;
+      const squadrePulite: Record<string, any> = {};
+
+      if (lega.squadre) {
+        Object.entries(lega.squadre).forEach(([key, sq]: [string, any]) => {
+          squadrePulite[key] = {
+            ...sq,
+            crediti: budgetIniziale,
+            giocatoriOccupati: 0,
+            rosa: isMantra ? { POR: [], MOV: [] } : { P: [], D: [], C: [], A: [] },
+          };
+        });
+      }
+
+      await update(ref(db, `leghe/${lega.id}`), {
+        squadre: squadrePulite,
+        faseAttivaNome: "Prima Asta",
+        storicoAsta: null,
+        sessioniRiparazione: null,
+        auditLogs: null,
+        statoAstaOnline: null,
+        watchlist: null,
+        busteChiuse: null,
+        ultimoResetStagionale: new Date().toISOString(),
+      });
+    }
+
+    alert(`✅ Chiusura stagione completata! Tutte le ${leghe.length} leghe sono state ripulite e sono pronte per la nuova stagione (Albi d'Oro conservati).`);
+  };
+
   // --- GESTIONE AVANZATA ADMIN, PARTECIPANTI, INVITI E RESET PASSWORD TEMPORANEA ---
   const apriModalUtentiLega = (lega: any) => {
     setSelectedLegaForUsers(lega);
@@ -279,10 +334,8 @@ export default function SuperAdminBackoffice() {
     if (!mailClean) return;
 
     try {
-      // 1. Invia anche email ufficiale di reset Firebase (per aggiornare la password su Firebase Auth)
       await sendPasswordResetEmail(auth, mailClean).catch(() => {});
 
-      // 2. Genera password temporanea e imposta obbligo cambio al primo accesso
       const res = await fetch("/api/admin-reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -540,6 +593,14 @@ export default function SuperAdminBackoffice() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={eseguiResetStagionaleGlobale}
+              className="bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/40 px-3 py-2 rounded-lg text-xs font-black uppercase transition"
+            >
+              🧹 Reset Stagionale Leghe
+            </button>
+
             <button
               type="button"
               onClick={toggleSitoOffline}
@@ -844,7 +905,7 @@ export default function SuperAdminBackoffice() {
                         </span>
                         <span className="text-xs font-bold text-white">{t.utenteEmail}</span>
                         <span className="text-[11px] text-neutral-500">
-                          • {new Date(t.createdAt).toLocaleString("it-IT")}
+                          - {new Date(t.createdAt).toLocaleString("it-IT")}
                         </span>
                       </div>
                       <p className="text-sm text-neutral-300">{t.messaggio}</p>
@@ -1009,7 +1070,6 @@ export default function SuperAdminBackoffice() {
                   const isCoAdmin = mailSalvata && coAdmins.includes(mailSalvata);
                   const isOnlineOra = Boolean(selectedLegaForUsers.presenzeAsta?.[`squadra_${sq.id}`]);
 
-                  // Fase di accesso partecipante
                   const faseBadge = !mailSalvata
                     ? { label: "Slot Libero", cls: "bg-neutral-800 text-neutral-400" }
                     : isOnlineOra

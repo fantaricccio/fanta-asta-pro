@@ -16,6 +16,7 @@ import { db, auth, googleProvider } from "../lib/firebase";
 import { sanitizeText } from "../lib/security";
 import ThemeToggle from "../components/ThemeToggle";
 import SupportModal from "../components/SupportModal";
+import InstallAppButton from "../components/InstallAppButton";
 
 const SUPER_ADMIN_EMAIL = "fantaricccio@gmail.com";
 
@@ -273,12 +274,19 @@ export default function HomePortale() {
   if (!user) {
     return (
       <main className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-4 font-sans relative overflow-hidden">
-        <div className="absolute top-4 right-4 z-20 flex gap-2">
+        <div className="absolute top-4 right-4 z-20 flex flex-wrap justify-end gap-2">
+          <Link
+            href="/demo"
+            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black uppercase text-xs px-3.5 py-2 rounded-lg shadow transition"
+          >
+            🎮 Prova Demo (1 Click)
+          </Link>
+          <InstallAppButton />
           <SupportModal />
           <ThemeToggle />
         </div>
 
-        <div className="max-w-md w-full bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden relative z-10">
+        <div className="max-w-md w-full bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden relative z-10 mt-14 sm:mt-0">
           <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-6 text-center">
             <h1 className="text-3xl font-black text-white tracking-tight">⚽ FantaAsta Pro</h1>
             <p className="text-blue-100 mt-1 text-sm">Gestisci la tua asta live e le rose della tua lega in cloud.</p>
@@ -390,7 +398,7 @@ export default function HomePortale() {
     <main className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-8 font-sans">
       <div className="max-w-4xl mx-auto space-y-6">
         
-        {/* HEADER UTENTE CON STATO LICENZA + SUPPORTO + TEMA */}
+        {/* HEADER UTENTE CON STATO LICENZA + INSTALLA APP + SUPPORTO + TEMA */}
         <header className="bg-slate-800 rounded-xl p-4 border border-slate-700 shadow-lg flex flex-col sm:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center font-bold text-white">
@@ -418,6 +426,7 @@ export default function HomePortale() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <InstallAppButton />
             <SupportModal />
             <ThemeToggle />
             <button
